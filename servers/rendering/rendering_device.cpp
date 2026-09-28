@@ -1217,6 +1217,7 @@ Error RenderingDevice::driver_callback_add(RDD::DriverCallback p_callback, void 
 					if (!texture) {
 						ERR_FAIL_V_MSG(ERR_INVALID_PARAMETER, vformat("Argument %d is not a valid texture.", i));
 					}
+					ERR_FAIL_COND_V_MSG(texture->unbounded_refs > 0, ERR_INVALID_PARAMETER, vformat("Argument %d is a texture held by an unbounded uniform binding, which is immutable.", i)); // GPU-driven rendering (fork).
 					if (_texture_make_mutable(texture, cr.rid)) {
 						draw_graph.add_synchronization();
 					}
@@ -2260,6 +2261,7 @@ Error RenderingDevice::texture_update(RID p_texture, uint32_t p_layer, const Vec
 
 	Texture *texture = texture_owner.get_or_null(p_texture);
 	ERR_FAIL_NULL_V(texture, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V_MSG(texture->unbounded_refs > 0, ERR_INVALID_PARAMETER, vformat("A texture held by an unbounded uniform binding is immutable (%d slot(s) hold it); overwrite those slots first.", texture->unbounded_refs)); // GPU-driven rendering (fork).
 
 	if (texture->owner != RID()) {
 		p_texture = texture->owner;
@@ -2675,6 +2677,7 @@ Vector<uint8_t> RenderingDevice::texture_get_data(RID p_texture, uint32_t p_laye
 
 	Texture *tex = texture_owner.get_or_null(p_texture);
 	ERR_FAIL_NULL_V(tex, Vector<uint8_t>());
+	ERR_FAIL_COND_V_MSG(tex->unbounded_refs > 0, Vector<uint8_t>(), vformat("A texture held by an unbounded uniform binding is immutable (%d slot(s) hold it); overwrite those slots first.", tex->unbounded_refs)); // GPU-driven rendering (fork).
 
 	ERR_FAIL_COND_V_MSG(tex->bound, Vector<uint8_t>(),
 			"Texture can't be retrieved while a draw list that uses it as part of a framebuffer is being created. Ensure the draw list is finalized (and that the color/depth texture using it is not set to `RenderingDevice.FINAL_ACTION_CONTINUE`) to retrieve this texture.");
@@ -2794,6 +2797,7 @@ Error RenderingDevice::texture_get_data_async(RID p_texture, uint32_t p_layer, c
 
 	Texture *tex = texture_owner.get_or_null(p_texture);
 	ERR_FAIL_NULL_V(tex, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V_MSG(tex->unbounded_refs > 0, ERR_INVALID_PARAMETER, vformat("A texture held by an unbounded uniform binding is immutable (%d slot(s) hold it); overwrite those slots first.", tex->unbounded_refs)); // GPU-driven rendering (fork).
 
 	ERR_FAIL_COND_V_MSG(tex->bound, ERR_INVALID_PARAMETER, "Texture can't be retrieved while a draw list that uses it as part of a framebuffer is being created. Ensure the draw list is finalized (and that the color/depth texture using it is not set to `RenderingDevice.FINAL_ACTION_CONTINUE`) to retrieve this texture.");
 	ERR_FAIL_COND_V_MSG(!(tex->usage_flags & TEXTURE_USAGE_CAN_COPY_FROM_BIT), ERR_INVALID_PARAMETER, "Texture requires the `RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT` to be set to be retrieved.");
@@ -2961,6 +2965,7 @@ Error RenderingDevice::texture_copy(RID p_from_texture, RID p_to_texture, const 
 
 	Texture *src_tex = texture_owner.get_or_null(p_from_texture);
 	ERR_FAIL_NULL_V(src_tex, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V_MSG(src_tex->unbounded_refs > 0, ERR_INVALID_PARAMETER, vformat("A texture held by an unbounded uniform binding is immutable (%d slot(s) hold it); overwrite those slots first.", src_tex->unbounded_refs)); // GPU-driven rendering (fork).
 
 	ERR_FAIL_COND_V_MSG(src_tex->bound, ERR_INVALID_PARAMETER,
 			"Source texture can't be copied while a draw list that uses it as part of a framebuffer is being created. Ensure the draw list is finalized (and that the color/depth texture using it is not set to `RenderingDevice.FINAL_ACTION_CONTINUE`) to copy this texture.");
@@ -2982,6 +2987,7 @@ Error RenderingDevice::texture_copy(RID p_from_texture, RID p_to_texture, const 
 
 	Texture *dst_tex = texture_owner.get_or_null(p_to_texture);
 	ERR_FAIL_NULL_V(dst_tex, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V_MSG(dst_tex->unbounded_refs > 0, ERR_INVALID_PARAMETER, vformat("A texture held by an unbounded uniform binding is immutable (%d slot(s) hold it); overwrite those slots first.", dst_tex->unbounded_refs)); // GPU-driven rendering (fork).
 
 	ERR_FAIL_COND_V_MSG(dst_tex->bound, ERR_INVALID_PARAMETER,
 			"Destination texture can't be copied while a draw list that uses it as part of a framebuffer is being created. Ensure the draw list is finalized (and that the color/depth texture using it is not set to `RenderingDevice.FINAL_ACTION_CONTINUE`) to copy this texture.");
@@ -3042,6 +3048,7 @@ Error RenderingDevice::texture_resolve_multisample(RID p_from_texture, RID p_to_
 
 	Texture *src_tex = texture_owner.get_or_null(p_from_texture);
 	ERR_FAIL_NULL_V(src_tex, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V_MSG(src_tex->unbounded_refs > 0, ERR_INVALID_PARAMETER, vformat("A texture held by an unbounded uniform binding is immutable (%d slot(s) hold it); overwrite those slots first.", src_tex->unbounded_refs)); // GPU-driven rendering (fork).
 
 	ERR_FAIL_COND_V_MSG(src_tex->bound, ERR_INVALID_PARAMETER,
 			"Source texture can't be copied while a draw list that uses it as part of a framebuffer is being created. Ensure the draw list is finalized (and that the color/depth texture using it is not set to `RenderingDevice.FINAL_ACTION_CONTINUE`) to copy this texture.");
@@ -3053,6 +3060,7 @@ Error RenderingDevice::texture_resolve_multisample(RID p_from_texture, RID p_to_
 
 	Texture *dst_tex = texture_owner.get_or_null(p_to_texture);
 	ERR_FAIL_NULL_V(dst_tex, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V_MSG(dst_tex->unbounded_refs > 0, ERR_INVALID_PARAMETER, vformat("A texture held by an unbounded uniform binding is immutable (%d slot(s) hold it); overwrite those slots first.", dst_tex->unbounded_refs)); // GPU-driven rendering (fork).
 
 	ERR_FAIL_COND_V_MSG(dst_tex->bound, ERR_INVALID_PARAMETER,
 			"Destination texture can't be copied while a draw list that uses it as part of a framebuffer is being created. Ensure the draw list is finalized (and that the color/depth texture using it is not set to `RenderingDevice.FINAL_ACTION_CONTINUE`) to copy this texture.");
@@ -3121,6 +3129,7 @@ Error RenderingDevice::texture_clear(RID p_texture, const Color &p_color, uint32
 
 	Texture *src_tex = texture_owner.get_or_null(p_texture);
 	ERR_FAIL_NULL_V(src_tex, ERR_INVALID_PARAMETER);
+	ERR_FAIL_COND_V_MSG(src_tex->unbounded_refs > 0, ERR_INVALID_PARAMETER, vformat("A texture held by an unbounded uniform binding is immutable (%d slot(s) hold it); overwrite those slots first.", src_tex->unbounded_refs)); // GPU-driven rendering (fork).
 
 	ERR_FAIL_COND_V_MSG(src_tex->bound, ERR_INVALID_PARAMETER,
 			"Source texture can't be cleared while a draw list that uses it as part of a framebuffer is being created. Ensure the draw list is finalized (and that the color/depth texture using it is not set to `RenderingDevice.FINAL_ACTION_CONTINUE`) to clear this texture.");
@@ -4178,6 +4187,28 @@ RID RenderingDevice::shader_create_from_bytecode_with_samplers(const Vector<uint
 	bool parsed_container = shader_container->from_bytes(p_shader_binary);
 	ERR_FAIL_COND_V_MSG(!parsed_container, RID(), "Failed to parse shader container from binary.");
 
+	{
+		// GPU-driven rendering (fork): a runtime array of sampled textures reflects with length 0
+		// and becomes an UNBOUNDED binding. Refuse what the driver cannot lay out before it tries.
+		const ShaderReflection &refl = shader_container->get_shader_reflection();
+		for (int i = 0; i < refl.uniform_sets.size(); i++) {
+			uint32_t unbounded = UINT32_MAX;
+			uint32_t highest = 0;
+			for (int j = 0; j < refl.uniform_sets[i].size(); j++) {
+				const ShaderUniform &u = refl.uniform_sets[i][j];
+				highest = MAX(highest, u.binding);
+				if (u.type == UNIFORM_TYPE_TEXTURE && u.length == 0) {
+					ERR_FAIL_COND_V_MSG(driver->uniform_set_unbounded_capacity() == 0, RID(), vformat("Set %d binding %d is a runtime array of textures, which this rendering driver does not support.", i, u.binding));
+					ERR_FAIL_COND_V_MSG(unbounded != UINT32_MAX, RID(), vformat("Set %d has two runtime-array bindings (%d and %d); only one per set is allowed.", i, unbounded, u.binding));
+					unbounded = u.binding;
+				} else if (u.length == 0 && (u.type == UNIFORM_TYPE_SAMPLER || u.type == UNIFORM_TYPE_SAMPLER_WITH_TEXTURE || u.type == UNIFORM_TYPE_IMAGE || u.type == UNIFORM_TYPE_TEXTURE_BUFFER || u.type == UNIFORM_TYPE_SAMPLER_WITH_TEXTURE_BUFFER || u.type == UNIFORM_TYPE_IMAGE_BUFFER)) {
+					ERR_FAIL_V_MSG(RID(), vformat("Set %d binding %d is a runtime array of a type other than a sampled texture, which is not supported.", i, u.binding));
+				}
+			}
+			ERR_FAIL_COND_V_MSG(unbounded != UINT32_MAX && unbounded != highest, RID(), vformat("Set %d: the runtime-array binding (%d) must have the highest binding number in its set (%d).", i, unbounded, highest));
+		}
+	}
+
 	Vector<RDD::ImmutableSampler> driver_immutable_samplers;
 	for (const PipelineImmutableSampler &source_sampler : p_immutable_samplers) {
 		RDD::ImmutableSampler driver_sampler;
@@ -4392,6 +4423,8 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 	Vector<UniformSet::SharedTexture> shared_textures_to_update;
 	LocalVector<RID> pending_clear_textures;
 	Vector<RID> acceleration_structures;
+	uint32_t unbounded_binding = UINT32_MAX;
+	Vector<RID> unbounded_slots;
 
 	for (uint32_t i = 0; i < set_uniform_count; i++) {
 		const ShaderUniform &set_uniform = set_uniforms[i];
@@ -4488,6 +4521,29 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 				}
 			} break;
 			case UNIFORM_TYPE_TEXTURE: {
+				if (set_uniform.length == 0) {
+					// GPU-driven rendering (fork): an UNBOUNDED binding. Any number of textures up to
+					// the capacity fills the first slots; the rest are written later. Each must be
+					// immutable (no tracker, no owner view, no fallback), so no tracker is ever walked
+					// for this set and no dependency is recorded — a slot is the caller's to keep valid.
+					const uint32_t capacity = driver->uniform_set_unbounded_capacity();
+					ERR_FAIL_COND_V_MSG(uniform.get_id_count() > capacity, RID(), vformat("Texture (binding: %d) is an unbounded array with a capacity of %d; %d IDs were provided.", uniform.binding, capacity, uniform.get_id_count()));
+					for (uint32_t j = 0; j < uniform.get_id_count(); j++) {
+						RID texture_id = uniform.get_id(j);
+						Texture *texture = texture_owner.get_or_null(texture_id);
+						ERR_FAIL_NULL_V_MSG(texture, RID(), "Texture (binding: " + itos(uniform.binding) + ", index " + itos(j) + ") is not a valid texture.");
+						ERR_FAIL_COND_V_MSG(!_texture_unbounded_eligible(texture), RID(), "Texture (binding: " + itos(uniform.binding) + ", index " + itos(j) + ") cannot sit in an unbounded binding: it must be a sampling-usable, non-attachment texture with no tracker, no owner and no shared fallback.");
+						_check_transfer_worker_texture(texture);
+						driver_uniform.ids.push_back(texture->driver_id);
+					}
+					unbounded_binding = set_uniform.binding;
+					unbounded_slots.resize(capacity);
+					for (uint32_t j = 0; j < uniform.get_id_count(); j++) {
+						unbounded_slots.write[j] = uniform.get_id(j);
+					}
+					break;
+				}
+
 				if (uniform.get_id_count() != (uint32_t)set_uniform.length) {
 					if (set_uniform.length > 1) {
 						ERR_FAIL_V_MSG(RID(), "Texture (binding: " + itos(uniform.binding) + ") is an array of (" + itos(set_uniform.length) + ") textures, so it should be provided equal number of texture IDs to satisfy it (IDs provided: " + itos(uniform.get_id_count()) + ").");
@@ -4778,6 +4834,8 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 	uniform_set.acceleration_structures = acceleration_structures;
 	uniform_set.shader_set = p_shader_set;
 	uniform_set.shader_id = p_shader;
+	uniform_set.unbounded_binding = unbounded_binding;
+	uniform_set.unbounded_slots = unbounded_slots;
 
 	RID id = uniform_set_owner.make_rid(uniform_set);
 #ifdef DEV_ENABLED
@@ -4787,6 +4845,16 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 	_add_dependency(id, p_shader);
 	for (uint32_t i = 0; i < uniform_count; i++) {
 		const Uniform &uniform = uniforms[i];
+		if (uniform.binding == unbounded_binding) {
+			// GPU-driven rendering (fork): a slot's texture pins nothing and frees nothing; it is counted instead.
+			for (uint32_t j = 0; j < uniform.get_id_count(); j++) {
+				Texture *texture = texture_owner.get_or_null(uniform.get_id(j));
+				if (texture != nullptr) {
+					texture->unbounded_refs++;
+				}
+			}
+			continue;
+		}
 		int id_count = uniform.get_id_count();
 		for (int j = 0; j < id_count; j++) {
 			_add_dependency(id, uniform.get_id(j));
@@ -4794,6 +4862,49 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 	}
 
 	return id;
+}
+
+bool RenderingDevice::_texture_unbounded_eligible(const Texture *p_texture) const {
+	// GPU-driven rendering (fork): what a texture must be to sit in an unbounded slot. Godot's
+	// untracked model already assumes such a texture rests in shader-read layout after its upload.
+	if (!(p_texture->usage_flags & TEXTURE_USAGE_SAMPLING_BIT)) {
+		return false;
+	}
+	if (p_texture->usage_flags & (TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | TEXTURE_USAGE_DEPTH_RESOLVE_ATTACHMENT_BIT | TEXTURE_USAGE_INPUT_ATTACHMENT_BIT | TEXTURE_USAGE_STORAGE_BIT)) {
+		return false;
+	}
+	return p_texture->draw_tracker == nullptr && !p_texture->owner.is_valid() && p_texture->shared_fallback == nullptr && !p_texture->pending_clear;
+}
+
+uint32_t RenderingDevice::uniform_set_unbounded_capacity() const {
+	return driver->uniform_set_unbounded_capacity();
+}
+
+void RenderingDevice::uniform_set_update_texture(RID p_uniform_set, uint32_t p_binding, uint32_t p_index, RID p_texture) {
+	_THREAD_SAFE_METHOD_
+
+	UniformSet *us = uniform_set_owner.get_or_null(p_uniform_set);
+	ERR_FAIL_NULL(us);
+	ERR_FAIL_COND_MSG(us->unbounded_binding == UINT32_MAX, "This uniform set has no unbounded binding.");
+	ERR_FAIL_COND_MSG(p_binding != us->unbounded_binding, vformat("Binding %d is not this uniform set's unbounded binding (%d).", p_binding, us->unbounded_binding));
+	ERR_FAIL_COND_MSG(p_index >= (uint32_t)us->unbounded_slots.size(), vformat("Slot %d is past the unbounded capacity (%d).", p_index, us->unbounded_slots.size()));
+	Texture *texture = texture_owner.get_or_null(p_texture);
+	ERR_FAIL_NULL_MSG(texture, "The texture is not valid. To empty a slot, write a fallback texture into it.");
+	ERR_FAIL_COND_MSG(!_texture_unbounded_eligible(texture), "The texture cannot sit in an unbounded binding: it must be a sampling-usable, non-attachment texture with no tracker, no owner and no shared fallback.");
+
+	_check_transfer_worker_texture(texture);
+
+	RID previous = us->unbounded_slots[p_index];
+	if (previous.is_valid()) {
+		Texture *previous_texture = texture_owner.get_or_null(previous);
+		if (previous_texture != nullptr && previous_texture->unbounded_refs > 0) {
+			previous_texture->unbounded_refs--;
+		}
+	}
+	us->unbounded_slots.write[p_index] = p_texture;
+	texture->unbounded_refs++;
+
+	driver->uniform_set_update_texture(us->driver_id, p_binding, p_index, texture->driver_id);
 }
 
 bool RenderingDevice::uniform_set_is_valid(RID p_uniform_set) {
@@ -6265,6 +6376,99 @@ void RenderingDevice::draw_list_draw_indirect(DrawListID p_list, bool p_use_indi
 	_check_transfer_worker_buffer(buffer);
 }
 
+void RenderingDevice::draw_list_draw_indirect_count(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, RID p_count_buffer, uint32_t p_count_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
+	// GPU-driven rendering (fork): draw_list_draw_indirect with the count read on the GPU.
+	ERR_RENDER_THREAD_GUARD();
+	ERR_FAIL_COND(!draw_list.active);
+	Buffer *buffer = storage_buffer_owner.get_or_null(p_buffer);
+	ERR_FAIL_NULL(buffer);
+	ERR_FAIL_COND_MSG(!buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Buffer provided was not created to do indirect dispatch.");
+	Buffer *count_buffer = storage_buffer_owner.get_or_null(p_count_buffer);
+	ERR_FAIL_NULL(count_buffer);
+	ERR_FAIL_COND_MSG(!count_buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Count buffer provided was not created to do indirect dispatch.");
+	ERR_FAIL_COND_MSG(p_count_offset + 4 > count_buffer->size, "Count offset provided (+4) is past the end of the count buffer.");
+	ERR_FAIL_COND_MSG(p_count_offset % 4 != 0, "Count offset must be a multiple of 4.");
+	ERR_FAIL_COND_MSG(p_max_draw_count == 0, "max_draw_count must be at least 1.");
+#ifdef DEBUG_ENABLED
+	ERR_FAIL_COND_MSG(!draw_list.validation.pipeline_active,
+			"No render pipeline was set before attempting to draw.");
+	if (draw_list.validation.pipeline_vertex_format != INVALID_ID) {
+		ERR_FAIL_COND_MSG(draw_list.validation.vertex_format == INVALID_ID,
+				"No vertex array was bound, and render pipeline expects vertices.");
+		ERR_FAIL_COND_MSG(draw_list.validation.pipeline_vertex_format != draw_list.validation.vertex_format,
+				"The vertex format used to create the pipeline does not match the vertex format bound.");
+	}
+	if (draw_list.validation.pipeline_push_constant_size > 0) {
+		ERR_FAIL_COND_MSG(!draw_list.validation.pipeline_push_constant_supplied,
+				"The shader in this pipeline requires a push constant to be set before drawing, but it's not present.");
+	}
+	for (uint32_t i = 0; i < draw_list.state.set_count; i++) {
+		if (draw_list.state.sets[i].pipeline_expected_format == 0) {
+			continue;
+		}
+		if (draw_list.state.sets[i].pipeline_expected_format != draw_list.state.sets[i].uniform_set_format) {
+			if (draw_list.state.sets[i].uniform_set_format == 0) {
+				ERR_FAIL_MSG(vformat("Uniforms were never supplied for set (%d) at the time of drawing, which are required by the pipeline.", i));
+			} else if (uniform_set_owner.owns(draw_list.state.sets[i].uniform_set)) {
+				UniformSet *us = uniform_set_owner.get_or_null(draw_list.state.sets[i].uniform_set);
+				const String us_info = us ? vformat("(%d):\n%s\n", i, _shader_uniform_debug(us->shader_id, us->shader_set)) : vformat("(%d, which was just freed) ", i);
+				ERR_FAIL_MSG(vformat("Uniforms supplied for set %sare not the same format as required by the pipeline shader. Pipeline shader requires the following bindings:\n%s", us_info, _shader_uniform_debug(draw_list.state.pipeline_shader)));
+			} else {
+				ERR_FAIL_MSG(vformat("Uniforms supplied for set (%d, which was just freed) are not the same format as required by the pipeline shader. Pipeline shader requires the following bindings:\n%s", i, _shader_uniform_debug(draw_list.state.pipeline_shader)));
+			}
+		}
+	}
+#endif
+	if (!driver->api_trait_get(RDD::API_TRAIT_HONORS_PIPELINE_BARRIERS)) {
+		for (uint32_t i = 0; i < draw_list.state.set_count; i++) {
+			if (draw_list.state.sets[i].pipeline_expected_format == 0) {
+				continue;
+			}
+			draw_graph.add_draw_list_uniform_set_prepare_for_use(draw_list.state.pipeline_shader_driver_id, draw_list.state.sets[i].uniform_set_driver_id, i);
+		}
+	}
+	for (uint32_t i = 0; i < draw_list.state.set_count; i++) {
+		if (draw_list.state.sets[i].pipeline_expected_format == 0) {
+			continue;
+		}
+		if (!draw_list.state.sets[i].bound) {
+			draw_graph.add_draw_list_bind_uniform_set(draw_list.state.pipeline_shader_driver_id, draw_list.state.sets[i].uniform_set_driver_id, i);
+			UniformSet *uniform_set = uniform_set_owner.get_or_null(draw_list.state.sets[i].uniform_set);
+			ERR_FAIL_NULL(uniform_set);
+			_uniform_set_update_shared(uniform_set);
+			_uniform_set_update_clears(uniform_set);
+			draw_graph.add_draw_list_usages(uniform_set->draw_trackers, uniform_set->draw_trackers_usage);
+			draw_list.state.sets[i].bound = true;
+		}
+	}
+
+	if (p_use_indices) {
+#ifdef DEBUG_ENABLED
+		ERR_FAIL_COND_MSG(!draw_list.validation.index_array_count,
+				"Draw command requested indices, but no index buffer was set.");
+		ERR_FAIL_COND_MSG(draw_list.validation.pipeline_uses_restart_indices != draw_list.validation.index_buffer_uses_restart_indices,
+				"The usage of restart indices in index buffer does not match the render primitive in the pipeline.");
+#endif
+		ERR_FAIL_COND_MSG(p_offset + 20 > buffer->size, "Offset provided (+20) is past the end of buffer.");
+		draw_graph.add_draw_list_draw_indexed_indirect_count(buffer->driver_id, p_offset, count_buffer->driver_id, p_count_offset, p_max_draw_count, p_stride);
+	} else {
+		ERR_FAIL_COND_MSG(p_offset + 16 > buffer->size, "Offset provided (+16) is past the end of buffer.");
+		draw_graph.add_draw_list_draw_indirect_count(buffer->driver_id, p_offset, count_buffer->driver_id, p_count_offset, p_max_draw_count, p_stride);
+	}
+
+	draw_list.state.draw_count++;
+
+	if (buffer->draw_tracker != nullptr) {
+		draw_graph.add_draw_list_usage(buffer->draw_tracker, RDG::RESOURCE_USAGE_INDIRECT_BUFFER_READ);
+	}
+	if (count_buffer->draw_tracker != nullptr) {
+		draw_graph.add_draw_list_usage(count_buffer->draw_tracker, RDG::RESOURCE_USAGE_INDIRECT_BUFFER_READ);
+	}
+
+	_check_transfer_worker_buffer(buffer);
+	_check_transfer_worker_buffer(count_buffer);
+}
+
 void RenderingDevice::draw_list_set_viewport(DrawListID p_list, const Rect2 &p_rect) {
 	ERR_FAIL_COND(!draw_list.active);
 
@@ -7423,6 +7627,10 @@ bool RenderingDevice::_texture_make_mutable(Texture *p_texture, RID p_texture_id
 	if (p_texture->draw_tracker != nullptr) {
 		// Texture already has a tracker.
 		return false;
+	} else if (p_texture->unbounded_refs > 0) {
+		// GPU-driven rendering (fork): no tracker is ever walked for an unbounded slot, so a texture
+		// held in one may not start needing layout transitions. Overwrite its slots first.
+		ERR_FAIL_V_MSG(false, vformat("A texture held by %d slot(s) of an unbounded uniform binding is immutable; overwrite those slots before writing to, copying into, or attaching the texture.", p_texture->unbounded_refs));
 	} else {
 		if (p_texture->owner.is_valid()) {
 			// Texture has an owner.
@@ -7642,6 +7850,12 @@ void RenderingDevice::_free_internal(RID p_id) {
 			}
 		}
 
+		if (texture->unbounded_refs > 0) {
+			// GPU-driven rendering (fork): the slots now hold a dangling descriptor. Partially-bound
+			// semantics make that legal only while no shader indexes them.
+			WARN_PRINT(vformat("Texture %s is still held by %d slot(s) of an unbounded uniform binding; a shader that indexes one of those slots now reads a freed texture.", itos(p_id.get_id()), texture->unbounded_refs));
+		}
+
 		frames[frame].textures_to_dispose_of.push_back(*texture);
 		texture_owner.free(p_id);
 	} else if (framebuffer_owner.owns(p_id)) {
@@ -7705,6 +7919,13 @@ void RenderingDevice::_free_internal(RID p_id) {
 	} else if (uniform_set_owner.owns(p_id)) {
 		UniformSet *uniform_set = uniform_set_owner.get_or_null(p_id);
 		frames[frame].uniform_sets_to_dispose_of.push_back(*uniform_set);
+		for (const RID &slot : uniform_set->unbounded_slots) {
+			// GPU-driven rendering (fork): the set's slots stop holding their textures.
+			Texture *slot_texture = slot.is_valid() ? texture_owner.get_or_null(slot) : nullptr;
+			if (slot_texture != nullptr && slot_texture->unbounded_refs > 0) {
+				slot_texture->unbounded_refs--;
+			}
+		}
 		uniform_set_owner.free(p_id);
 
 		if (uniform_set->invalidated_callback != nullptr) {
@@ -9110,6 +9331,8 @@ void RenderingDevice::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("uniform_set_create", "uniforms", "shader", "shader_set"), &RenderingDevice::_uniform_set_create);
 	ClassDB::bind_method(D_METHOD("uniform_set_is_valid", "uniform_set"), &RenderingDevice::uniform_set_is_valid);
+	ClassDB::bind_method(D_METHOD("uniform_set_unbounded_capacity"), &RenderingDevice::uniform_set_unbounded_capacity);
+	ClassDB::bind_method(D_METHOD("uniform_set_update_texture", "uniform_set", "binding", "index", "texture"), &RenderingDevice::uniform_set_update_texture);
 
 	ClassDB::bind_method(D_METHOD("buffer_copy", "src_buffer", "dst_buffer", "src_offset", "dst_offset", "size"), &RenderingDevice::buffer_copy);
 	ClassDB::bind_method(D_METHOD("buffer_update", "buffer", "offset", "size_bytes", "data"), &RenderingDevice::_buffer_update_bind);
@@ -9160,6 +9383,7 @@ void RenderingDevice::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("draw_list_draw", "draw_list", "use_indices", "instances", "procedural_vertex_count"), &RenderingDevice::draw_list_draw, DEFVAL(0));
 	ClassDB::bind_method(D_METHOD("draw_list_draw_indirect", "draw_list", "use_indices", "buffer", "offset", "draw_count", "stride"), &RenderingDevice::draw_list_draw_indirect, DEFVAL(0), DEFVAL(1), DEFVAL(0));
+	ClassDB::bind_method(D_METHOD("draw_list_draw_indirect_count", "draw_list", "use_indices", "buffer", "offset", "count_buffer", "count_offset", "max_draw_count", "stride"), &RenderingDevice::draw_list_draw_indirect_count, DEFVAL(0));
 
 	ClassDB::bind_method(D_METHOD("draw_list_enable_scissor", "draw_list", "rect"), &RenderingDevice::draw_list_enable_scissor, DEFVAL(Rect2()));
 	ClassDB::bind_method(D_METHOD("draw_list_disable_scissor", "draw_list"), &RenderingDevice::draw_list_disable_scissor);

@@ -172,6 +172,10 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
 		bool shader_draw_parameters = false;
 	};
 	GpuDrivenCapabilities gpu_driven_capabilities;
+	// The slot count of every unbounded binding: 65536, or less where the device's update-after-bind
+	// limits are lower. Fixed rather than the limit itself because AMD reports the limit as 2^32-1.
+	uint32_t unbounded_capacity = 0;
+	static const uint32_t UNBOUNDED_CAPACITY_MAX = 65536;
 	AccelerationStructureCapabilities acceleration_structure_capabilities;
 	bool ray_query_support = false;
 	RaytracingCapabilities raytracing_capabilities;
@@ -497,6 +501,7 @@ private:
 		VkShaderStageFlags vk_push_constant_stages = 0;
 		TightLocalVector<VkPipelineShaderStageCreateInfo> vk_stages_create_info;
 		TightLocalVector<VkDescriptorSetLayout> vk_descriptor_set_layouts;
+		TightLocalVector<uint32_t> vk_unbounded_binding; // GPU-driven rendering (fork): per set, the unbounded binding's index, or UINT32_MAX.
 		TightLocalVector<respv::Shader> respv_stage_shaders;
 		TightLocalVector<Vector<uint8_t>> spirv_stage_bytes;
 		TightLocalVector<uint64_t> original_stage_size;
@@ -555,6 +560,8 @@ private:
 		VkDescriptorSet vk_descriptor_set = VK_NULL_HANDLE;
 		VkDescriptorPool vk_descriptor_pool = VK_NULL_HANDLE;
 		VkDescriptorPool vk_linear_descriptor_pool = VK_NULL_HANDLE;
+		VkDescriptorPool vk_unbounded_pool = VK_NULL_HANDLE; // GPU-driven rendering (fork): a set with an unbounded binding owns a pool of its own.
+		uint32_t unbounded_binding = UINT32_MAX;
 		DescriptorSetPools::Iterator pool_sets_it;
 		TightLocalVector<BufferInfo const *, uint32_t> dynamic_buffers;
 	};
@@ -565,6 +572,8 @@ public:
 	virtual UniformSetID uniform_set_create(VectorView<BoundUniform> p_uniforms, ShaderID p_shader, uint32_t p_set_index, int p_linear_pool_index) override final;
 	virtual void linear_uniform_set_pools_reset(int p_linear_pool_index) override final;
 	virtual void uniform_set_free(UniformSetID p_uniform_set) override final;
+	virtual uint32_t uniform_set_unbounded_capacity() const override final;
+	virtual void uniform_set_update_texture(UniformSetID p_uniform_set, uint32_t p_binding, uint32_t p_index, TextureID p_texture) override final;
 	virtual bool uniform_sets_have_linear_pools() const override final;
 	virtual uint32_t uniform_sets_get_dynamic_offsets(VectorView<UniformSetID> p_uniform_sets, ShaderID p_shader, uint32_t p_first_set_index, uint32_t p_set_count) const override final;
 

@@ -377,6 +377,7 @@ public:
 		SharedFallback *shared_fallback = nullptr;
 		int32_t transfer_worker_index = -1;
 		uint64_t transfer_worker_operation = 0;
+		uint32_t unbounded_refs = 0; // GPU-driven rendering (fork): slots of unbounded bindings holding this texture; while > 0 it is immutable.
 
 		RDD::TextureSubresourceRange barrier_range() const {
 			RDD::TextureSubresourceRange r;
@@ -1167,6 +1168,10 @@ private:
 		Vector<RID> acceleration_structures; // Used for validation.
 		InvalidationCallback invalidated_callback = nullptr;
 		void *invalidated_callback_userdata = nullptr;
+		// GPU-driven rendering (fork): the unbounded binding, if any, and the texture in each of its
+		// slots (RID() where empty) — what the reference counts on Texture are reconciled against.
+		uint32_t unbounded_binding = UINT32_MAX;
+		Vector<RID> unbounded_slots;
 	};
 
 	RID_Owner<UniformSet, true> uniform_set_owner;
@@ -1188,6 +1193,11 @@ public:
 	RID uniform_set_create(const VectorView<Uniform> &p_uniforms, RID p_shader, uint32_t p_shader_set, bool p_linear_pool = false);
 	bool uniform_set_is_valid(RID p_uniform_set);
 	void uniform_set_set_invalidation_callback(RID p_uniform_set, InvalidationCallback p_callback, void *p_userdata);
+	// GPU-driven rendering (fork): see the driver interface. A texture placed in an unbounded slot is
+	// IMMUTABLE for as long as any slot holds it; overwrite the slot (with a fallback texture, never
+	// a null RID) before freeing the texture, and never touch a slot an in-flight frame reads.
+	uint32_t uniform_set_unbounded_capacity() const;
+	void uniform_set_update_texture(RID p_uniform_set, uint32_t p_binding, uint32_t p_index, RID p_texture);
 
 	bool uniform_sets_have_linear_pools() const;
 
@@ -1556,6 +1566,9 @@ public:
 
 	void draw_list_draw(DrawListID p_list, bool p_use_indices, uint32_t p_instances = 1, uint32_t p_procedural_vertices = 0);
 	void draw_list_draw_indirect(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset = 0, uint32_t p_draw_count = 1, uint32_t p_stride = 0);
+	// GPU-driven rendering (fork): the draw count is a uint32 read from `p_count_buffer` at
+	// `p_count_offset`, capped by `p_max_draw_count`. Both buffers need STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT.
+	void draw_list_draw_indirect_count(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, RID p_count_buffer, uint32_t p_count_offset, uint32_t p_max_draw_count, uint32_t p_stride = 0);
 
 	void draw_list_set_viewport(DrawListID p_list, const Rect2 &p_rect);
 	void draw_list_enable_scissor(DrawListID p_list, const Rect2 &p_rect);
@@ -1737,6 +1750,7 @@ private:
 	/***********************/
 
 	bool _texture_make_mutable(Texture *p_texture, RID p_texture_id);
+	bool _texture_unbounded_eligible(const Texture *p_texture) const;
 	bool _buffer_make_mutable(Buffer *p_buffer, RID p_buffer_id);
 	bool _vertex_array_make_mutable(VertexArray *p_vertex_array, RID p_resource_id, RDG::ResourceTracker *p_resource_tracker);
 	bool _index_array_make_mutable(IndexArray *p_index_array, RDG::ResourceTracker *p_resource_tracker);
