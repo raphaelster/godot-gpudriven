@@ -162,6 +162,16 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
 	bool buffer_device_address_support = false;
 	bool vulkan_memory_model_support = false;
 	bool vulkan_memory_model_device_scope_support = false;
+	// GPU-driven rendering (fork): Vulkan 1.2 core features this build REQUIRES of every device.
+	// `descriptor_indexing` is the spec's umbrella feature, whose TRUE implies non-uniform sampled-
+	// image and storage-buffer indexing, runtime descriptor arrays, partially bound, variable count
+	// and update-after-bind for every descriptor type; each is still enabled by name at creation.
+	struct GpuDrivenCapabilities {
+		bool descriptor_indexing = false;
+		bool draw_indirect_count = false;
+		bool shader_draw_parameters = false;
+	};
+	GpuDrivenCapabilities gpu_driven_capabilities;
 	AccelerationStructureCapabilities acceleration_structure_capabilities;
 	bool ray_query_support = false;
 	RaytracingCapabilities raytracing_capabilities;

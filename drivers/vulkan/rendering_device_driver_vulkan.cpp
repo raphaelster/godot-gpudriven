@@ -917,11 +917,16 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 		VkPhysicalDeviceSynchronization2FeaturesKHR sync_2_features = {};
 		VkPhysicalDeviceRayTracingValidationFeaturesNV raytracing_validation_features = {};
 
+		VkPhysicalDeviceVulkan11Features device_features_vk_1_1 = {};
 		const bool use_1_2_features = physical_device_properties.apiVersion >= VK_API_VERSION_1_2;
 		if (use_1_2_features) {
 			device_features_vk_1_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 			device_features_vk_1_2.pNext = next_features;
 			next_features = &device_features_vk_1_2;
+			// GPU-driven rendering (fork): the 1.1 struct is what reports shaderDrawParameters.
+			device_features_vk_1_1.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+			device_features_vk_1_1.pNext = next_features;
+			next_features = &device_features_vk_1_1;
 		} else {
 			if (enabled_device_extension_names.has(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)) {
 				shader_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR;
@@ -1015,6 +1020,21 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 #ifdef MACOS_ENABLED
 			ERR_FAIL_COND_V_MSG(!device_features_vk_1_2.shaderSampledImageArrayNonUniformIndexing, ERR_CANT_CREATE, "Your GPU doesn't support shaderSampledImageArrayNonUniformIndexing which is required to use the Vulkan-based renderers in Godot.");
 #endif
+			// GPU-driven rendering (fork). The umbrella implies every individual descriptor-indexing
+			// feature (Vulkan 1.2 "Feature Requirements"); the named ones are checked too so a driver
+			// that misreports the umbrella is refused here rather than at pipeline creation.
+			gpu_driven_capabilities.descriptor_indexing = device_features_vk_1_2.descriptorIndexing &&
+					device_features_vk_1_2.shaderSampledImageArrayNonUniformIndexing &&
+					device_features_vk_1_2.shaderStorageBufferArrayNonUniformIndexing &&
+					device_features_vk_1_2.runtimeDescriptorArray &&
+					device_features_vk_1_2.descriptorBindingPartiallyBound &&
+					device_features_vk_1_2.descriptorBindingVariableDescriptorCount &&
+					device_features_vk_1_2.descriptorBindingUpdateUnusedWhilePending &&
+					device_features_vk_1_2.descriptorBindingSampledImageUpdateAfterBind &&
+					device_features_vk_1_2.descriptorBindingStorageImageUpdateAfterBind &&
+					device_features_vk_1_2.descriptorBindingStorageBufferUpdateAfterBind;
+			gpu_driven_capabilities.draw_indirect_count = device_features_vk_1_2.drawIndirectCount;
+			gpu_driven_capabilities.shader_draw_parameters = device_features_vk_1_1.shaderDrawParameters;
 			if (enabled_device_extension_names.has(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)) {
 				shader_capabilities.shader_float16_is_supported = device_features_vk_1_2.shaderFloat16;
 				shader_capabilities.shader_int8_is_supported = device_features_vk_1_2.shaderInt8;
@@ -1095,6 +1115,17 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 			raytracing_capabilities.validation = raytracing_validation_features.rayTracingValidation;
 		}
 	}
+
+	// GPU-driven rendering (fork): this build targets desktop Vulkan 1.2+ only and REQUIRES the
+	// features its renderer is written against, rather than gating each use on a capability bit.
+	ERR_FAIL_COND_V_MSG(physical_device_properties.apiVersion < VK_API_VERSION_1_2, ERR_CANT_CREATE,
+			"This build requires a Vulkan 1.2 device; the selected GPU reports " + itos(VK_API_VERSION_MAJOR(physical_device_properties.apiVersion)) + "." + itos(VK_API_VERSION_MINOR(physical_device_properties.apiVersion)) + ".");
+	ERR_FAIL_COND_V_MSG(!gpu_driven_capabilities.descriptor_indexing, ERR_CANT_CREATE,
+			"This build requires the Vulkan 1.2 descriptorIndexing feature set (non-uniform indexing, runtime descriptor arrays, partially bound, variable count, update-after-bind), which the selected GPU does not report.");
+	ERR_FAIL_COND_V_MSG(!gpu_driven_capabilities.draw_indirect_count, ERR_CANT_CREATE,
+			"This build requires the Vulkan 1.2 drawIndirectCount feature, which the selected GPU does not report.");
+	ERR_FAIL_COND_V_MSG(!gpu_driven_capabilities.shader_draw_parameters, ERR_CANT_CREATE,
+			"This build requires the Vulkan 1.1 shaderDrawParameters feature, which the selected GPU does not report.");
 
 	if (functions.GetPhysicalDeviceProperties2 != nullptr) {
 		void *next_properties = nullptr;
@@ -1337,28 +1368,58 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 	}
 
 	void *create_info_next = nullptr;
+	const bool enable_1_2_features = physical_device_properties.apiVersion >= VK_API_VERSION_1_2;
+	VkPhysicalDeviceVulkan12Features vulkan_1_2_features = {};
 	VkPhysicalDeviceShaderFloat16Int8FeaturesKHR shader_features = {};
-	shader_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR;
-	shader_features.pNext = create_info_next;
-	shader_features.shaderFloat16 = shader_capabilities.shader_float16_is_supported;
-	shader_features.shaderInt8 = shader_capabilities.shader_int8_is_supported;
-	create_info_next = &shader_features;
-
 	VkPhysicalDeviceBufferDeviceAddressFeaturesKHR buffer_device_address_features = {};
-	if (buffer_device_address_support) {
-		buffer_device_address_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_KHR;
-		buffer_device_address_features.pNext = create_info_next;
-		buffer_device_address_features.bufferDeviceAddress = buffer_device_address_support;
-		create_info_next = &buffer_device_address_features;
-	}
-
 	VkPhysicalDeviceVulkanMemoryModelFeaturesKHR vulkan_memory_model_features = {};
-	if (vulkan_memory_model_support && vulkan_memory_model_device_scope_support) {
-		vulkan_memory_model_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES_KHR;
-		vulkan_memory_model_features.pNext = create_info_next;
-		vulkan_memory_model_features.vulkanMemoryModel = vulkan_memory_model_support;
-		vulkan_memory_model_features.vulkanMemoryModelDeviceScope = vulkan_memory_model_device_scope_support;
-		create_info_next = &vulkan_memory_model_features;
+	if (enable_1_2_features) {
+		// GPU-driven rendering (fork). The spec forbids a VkPhysicalDeviceVulkan12Features beside
+		// the per-extension structs it subsumes (VUID-VkDeviceCreateInfo-pNext-02830), so on a 1.2
+		// device this one struct carries what the three KHR structs below carry on an older one,
+		// plus the descriptor-indexing set and drawIndirectCount the fork requires (checked at
+		// _check_device_capabilities, so every field set here is one the device reported).
+		vulkan_1_2_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+		vulkan_1_2_features.pNext = create_info_next;
+		vulkan_1_2_features.shaderFloat16 = shader_capabilities.shader_float16_is_supported;
+		vulkan_1_2_features.shaderInt8 = shader_capabilities.shader_int8_is_supported;
+		vulkan_1_2_features.bufferDeviceAddress = buffer_device_address_support;
+		const bool memory_model = vulkan_memory_model_support && vulkan_memory_model_device_scope_support;
+		vulkan_1_2_features.vulkanMemoryModel = memory_model;
+		vulkan_1_2_features.vulkanMemoryModelDeviceScope = memory_model;
+		vulkan_1_2_features.descriptorIndexing = VK_TRUE;
+		vulkan_1_2_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+		vulkan_1_2_features.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+		vulkan_1_2_features.runtimeDescriptorArray = VK_TRUE;
+		vulkan_1_2_features.descriptorBindingPartiallyBound = VK_TRUE;
+		vulkan_1_2_features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+		vulkan_1_2_features.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+		vulkan_1_2_features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+		vulkan_1_2_features.descriptorBindingStorageImageUpdateAfterBind = VK_TRUE;
+		vulkan_1_2_features.descriptorBindingStorageBufferUpdateAfterBind = VK_TRUE;
+		vulkan_1_2_features.drawIndirectCount = VK_TRUE;
+		create_info_next = &vulkan_1_2_features;
+	} else {
+		shader_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR;
+		shader_features.pNext = create_info_next;
+		shader_features.shaderFloat16 = shader_capabilities.shader_float16_is_supported;
+		shader_features.shaderInt8 = shader_capabilities.shader_int8_is_supported;
+		create_info_next = &shader_features;
+
+		if (buffer_device_address_support) {
+			buffer_device_address_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES_KHR;
+			buffer_device_address_features.pNext = create_info_next;
+			buffer_device_address_features.bufferDeviceAddress = buffer_device_address_support;
+			create_info_next = &buffer_device_address_features;
+		}
+
+		if (vulkan_memory_model_support && vulkan_memory_model_device_scope_support) {
+			vulkan_memory_model_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES_KHR;
+			vulkan_memory_model_features.pNext = create_info_next;
+			vulkan_memory_model_features.vulkanMemoryModel = vulkan_memory_model_support;
+			vulkan_memory_model_features.vulkanMemoryModelDeviceScope = vulkan_memory_model_device_scope_support;
+			create_info_next = &vulkan_memory_model_features;
+		}
 	}
 
 	VkPhysicalDeviceFragmentShadingRateFeaturesKHR fsr_features = {};
@@ -1444,7 +1505,6 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 	VkPhysicalDeviceVulkan11Features vulkan_1_1_features = {};
 	VkPhysicalDevice16BitStorageFeaturesKHR storage_features = {};
 	VkPhysicalDeviceMultiviewFeatures multiview_features = {};
-	const bool enable_1_2_features = physical_device_properties.apiVersion >= VK_API_VERSION_1_2;
 	if (enable_1_2_features) {
 		// In Vulkan 1.2 and newer we use a newer struct to enable various features.
 		vulkan_1_1_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
@@ -1460,7 +1520,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 		vulkan_1_1_features.variablePointers = 0;
 		vulkan_1_1_features.protectedMemory = 0;
 		vulkan_1_1_features.samplerYcbcrConversion = 0;
-		vulkan_1_1_features.shaderDrawParameters = 0;
+		vulkan_1_1_features.shaderDrawParameters = VK_TRUE; // GPU-driven rendering (fork): gl_DrawID / gl_BaseInstance.
 		create_info_next = &vulkan_1_1_features;
 	} else {
 		// On Vulkan 1.0 and 1.1 we use our older structs to initialize these features.
@@ -1505,6 +1565,8 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 			vkGetDeviceQueue(vk_device, i, j, &queue_families[i][j].queue);
 		}
 	}
+
+	print_verbose("Vulkan: GPU-driven features enabled: descriptor indexing (non-uniform, runtime arrays, partially bound, variable count, update-after-bind), drawIndirectCount, shaderDrawParameters.");
 
 	const RenderingContextDriverVulkan::Functions &functions = context_driver->functions_get();
 	if (functions.GetDeviceProcAddr != nullptr) {
