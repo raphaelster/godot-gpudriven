@@ -201,7 +201,14 @@ void RenderingDevice::_free_dependencies(RID p_id) {
 	HashMap<RID, HashSet<RID>>::Iterator E = dependency_map.find(p_id);
 	if (E) {
 		while (E->value.size()) {
-			free_rid(*E->value.begin());
+			RID dependent = *E->value.begin();
+			// GPU-driven rendering (fork): a uniform set that holds p_id only in unbounded slots
+			// empties those slots (dropping this edge) instead of being freed with it.
+			UniformSet *us = uniform_set_owner.get_or_null(dependent);
+			if (us != nullptr && !us->unbounded.is_empty() && _unbounded_forget(dependent, us, p_id) && !E->value.has(dependent)) {
+				continue;
+			}
+			free_rid(dependent);
 		}
 		dependency_map.remove(E);
 	}
@@ -4192,20 +4199,14 @@ RID RenderingDevice::shader_create_from_bytecode_with_samplers(const Vector<uint
 		// and becomes an UNBOUNDED binding. Refuse what the driver cannot lay out before it tries.
 		const ShaderReflection &refl = shader_container->get_shader_reflection();
 		for (int i = 0; i < refl.uniform_sets.size(); i++) {
-			uint32_t unbounded = UINT32_MAX;
-			uint32_t highest = 0;
 			for (int j = 0; j < refl.uniform_sets[i].size(); j++) {
 				const ShaderUniform &u = refl.uniform_sets[i][j];
-				highest = MAX(highest, u.binding);
-				if (u.type == UNIFORM_TYPE_TEXTURE && u.length == 0) {
+				if ((u.type == UNIFORM_TYPE_TEXTURE || u.type == UNIFORM_TYPE_IMAGE) && u.length == 0) {
 					ERR_FAIL_COND_V_MSG(driver->uniform_set_unbounded_capacity() == 0, RID(), vformat("Set %d binding %d is a runtime array of textures, which this rendering driver does not support.", i, u.binding));
-					ERR_FAIL_COND_V_MSG(unbounded != UINT32_MAX, RID(), vformat("Set %d has two runtime-array bindings (%d and %d); only one per set is allowed.", i, unbounded, u.binding));
-					unbounded = u.binding;
-				} else if (u.length == 0 && (u.type == UNIFORM_TYPE_SAMPLER || u.type == UNIFORM_TYPE_SAMPLER_WITH_TEXTURE || u.type == UNIFORM_TYPE_IMAGE || u.type == UNIFORM_TYPE_TEXTURE_BUFFER || u.type == UNIFORM_TYPE_SAMPLER_WITH_TEXTURE_BUFFER || u.type == UNIFORM_TYPE_IMAGE_BUFFER)) {
-					ERR_FAIL_V_MSG(RID(), vformat("Set %d binding %d is a runtime array of a type other than a sampled texture, which is not supported.", i, u.binding));
+				} else if (u.length == 0 && (u.type == UNIFORM_TYPE_SAMPLER || u.type == UNIFORM_TYPE_SAMPLER_WITH_TEXTURE || u.type == UNIFORM_TYPE_TEXTURE_BUFFER || u.type == UNIFORM_TYPE_SAMPLER_WITH_TEXTURE_BUFFER || u.type == UNIFORM_TYPE_IMAGE_BUFFER)) {
+					ERR_FAIL_V_MSG(RID(), vformat("Set %d binding %d is a runtime array of a type other than a sampled texture or a storage image, which is not supported.", i, u.binding));
 				}
 			}
-			ERR_FAIL_COND_V_MSG(unbounded != UINT32_MAX && unbounded != highest, RID(), vformat("Set %d: the runtime-array binding (%d) must have the highest binding number in its set (%d).", i, unbounded, highest));
 		}
 	}
 
@@ -4423,8 +4424,38 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 	Vector<UniformSet::SharedTexture> shared_textures_to_update;
 	LocalVector<RID> pending_clear_textures;
 	Vector<RID> acceleration_structures;
-	uint32_t unbounded_binding = UINT32_MAX;
-	Vector<RID> unbounded_slots;
+	Vector<UniformSet::UnboundedBinding> unbounded;
+
+	// GPU-driven rendering (fork): fills an unbounded binding's first slots at creation. A texture
+	// with a tracker is carried by the set's trackers; one without is counted and stays immutable.
+	auto fill_unbounded = [&](const ShaderUniform &set_uniform, const Uniform &uniform, const char *p_what) -> bool {
+		const uint32_t capacity = driver->uniform_set_unbounded_capacity();
+		ERR_FAIL_COND_V_MSG(uniform.get_id_count() > capacity, false, vformat("%s (binding: %d) is an unbounded array with a capacity of %d; %d IDs were provided.", p_what, uniform.binding, capacity, uniform.get_id_count()));
+		UniformSet::UnboundedBinding ub;
+		ub.binding = set_uniform.binding;
+		ub.type = set_uniform.type;
+		ub.slots.resize(capacity);
+		for (uint32_t j = 0; j < uniform.get_id_count(); j++) {
+			RID texture_id = uniform.get_id(j);
+			Texture *texture = texture_owner.get_or_null(texture_id);
+			ERR_FAIL_NULL_V_MSG(texture, false, vformat("%s (binding: %d, index %d) is not a valid texture.", p_what, uniform.binding, j));
+			ERR_FAIL_COND_V_MSG(!_texture_unbounded_eligible(texture, set_uniform.type), false, vformat("%s (binding: %d, index %d) cannot sit in an unbounded binding: it needs the usage its binding kind samples or stores through, and no owner or shared fallback.", p_what, uniform.binding, j));
+			_texture_check_pending_clear(texture_id, texture);
+			if (set_uniform.type == UNIFORM_TYPE_IMAGE && _texture_make_mutable(texture, texture_id)) {
+				draw_graph.add_synchronization();
+			}
+			_check_transfer_worker_texture(texture);
+			if (texture->draw_tracker != nullptr) {
+				draw_trackers.push_back(texture->draw_tracker);
+				draw_trackers_usage.push_back(_unbounded_usage(set_uniform.type));
+			} else {
+				texture->unbounded_refs++;
+			}
+			ub.slots.write[j] = texture_id;
+		}
+		unbounded.push_back(ub);
+		return true;
+	};
 
 	for (uint32_t i = 0; i < set_uniform_count; i++) {
 		const ShaderUniform &set_uniform = set_uniforms[i];
@@ -4522,24 +4553,12 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 			} break;
 			case UNIFORM_TYPE_TEXTURE: {
 				if (set_uniform.length == 0) {
-					// GPU-driven rendering (fork): an UNBOUNDED binding. Any number of textures up to
-					// the capacity fills the first slots; the rest are written later. Each must be
-					// immutable (no tracker, no owner view, no fallback), so no tracker is ever walked
-					// for this set and no dependency is recorded — a slot is the caller's to keep valid.
-					const uint32_t capacity = driver->uniform_set_unbounded_capacity();
-					ERR_FAIL_COND_V_MSG(uniform.get_id_count() > capacity, RID(), vformat("Texture (binding: %d) is an unbounded array with a capacity of %d; %d IDs were provided.", uniform.binding, capacity, uniform.get_id_count()));
-					for (uint32_t j = 0; j < uniform.get_id_count(); j++) {
-						RID texture_id = uniform.get_id(j);
-						Texture *texture = texture_owner.get_or_null(texture_id);
-						ERR_FAIL_NULL_V_MSG(texture, RID(), "Texture (binding: " + itos(uniform.binding) + ", index " + itos(j) + ") is not a valid texture.");
-						ERR_FAIL_COND_V_MSG(!_texture_unbounded_eligible(texture), RID(), "Texture (binding: " + itos(uniform.binding) + ", index " + itos(j) + ") cannot sit in an unbounded binding: it must be a sampling-usable, non-attachment texture with no tracker, no owner and no shared fallback.");
-						_check_transfer_worker_texture(texture);
-						driver_uniform.ids.push_back(texture->driver_id);
+					// GPU-driven rendering (fork): an UNBOUNDED sampled-texture binding.
+					if (!fill_unbounded(set_uniform, uniform, "Texture")) {
+						return RID();
 					}
-					unbounded_binding = set_uniform.binding;
-					unbounded_slots.resize(capacity);
 					for (uint32_t j = 0; j < uniform.get_id_count(); j++) {
-						unbounded_slots.write[j] = uniform.get_id(j);
+						driver_uniform.ids.push_back(texture_owner.get_or_null(uniform.get_id(j))->driver_id);
 					}
 					break;
 				}
@@ -4593,6 +4612,17 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 				}
 			} break;
 			case UNIFORM_TYPE_IMAGE: {
+				if (set_uniform.length == 0) {
+					// GPU-driven rendering (fork): an UNBOUNDED storage-image binding.
+					if (!fill_unbounded(set_uniform, uniform, "Image")) {
+						return RID();
+					}
+					for (uint32_t j = 0; j < uniform.get_id_count(); j++) {
+						driver_uniform.ids.push_back(texture_owner.get_or_null(uniform.get_id(j))->driver_id);
+					}
+					break;
+				}
+
 				if (uniform.get_id_count() != (uint32_t)set_uniform.length) {
 					if (set_uniform.length > 1) {
 						ERR_FAIL_V_MSG(RID(), "Image (binding: " + itos(uniform.binding) + ") is an array of (" + itos(set_uniform.length) + ") textures, so it should be provided equal number of texture IDs to satisfy it (IDs provided: " + itos(uniform.get_id_count()) + ").");
@@ -4834,46 +4864,119 @@ RID RenderingDevice::uniform_set_create(const VectorView<RD::Uniform> &p_uniform
 	uniform_set.acceleration_structures = acceleration_structures;
 	uniform_set.shader_set = p_shader_set;
 	uniform_set.shader_id = p_shader;
-	uniform_set.unbounded_binding = unbounded_binding;
-	uniform_set.unbounded_slots = unbounded_slots;
+	uniform_set.unbounded = unbounded;
 
 	RID id = uniform_set_owner.make_rid(uniform_set);
 #ifdef DEV_ENABLED
 	set_resource_name(id, "RID:" + itos(id.get_id()));
 #endif
 	// Add dependencies.
+	UniformSet *stored = uniform_set_owner.get_or_null(id);
 	_add_dependency(id, p_shader);
+	stored->fixed_dependencies.insert(p_shader);
 	for (uint32_t i = 0; i < uniform_count; i++) {
 		const Uniform &uniform = uniforms[i];
-		if (uniform.binding == unbounded_binding) {
-			// GPU-driven rendering (fork): a slot's texture pins nothing and frees nothing; it is counted instead.
-			for (uint32_t j = 0; j < uniform.get_id_count(); j++) {
-				Texture *texture = texture_owner.get_or_null(uniform.get_id(j));
-				if (texture != nullptr) {
-					texture->unbounded_refs++;
-				}
-			}
-			continue;
+		bool is_slot = false;
+		for (const UniformSet::UnboundedBinding &ub : unbounded) {
+			is_slot = is_slot || ub.binding == uniform.binding;
 		}
 		int id_count = uniform.get_id_count();
 		for (int j = 0; j < id_count; j++) {
 			_add_dependency(id, uniform.get_id(j));
+			if (!is_slot) {
+				stored->fixed_dependencies.insert(uniform.get_id(j));
+			}
 		}
 	}
 
 	return id;
 }
 
-bool RenderingDevice::_texture_unbounded_eligible(const Texture *p_texture) const {
-	// GPU-driven rendering (fork): what a texture must be to sit in an unbounded slot. Godot's
-	// untracked model already assumes such a texture rests in shader-read layout after its upload.
-	if (!(p_texture->usage_flags & TEXTURE_USAGE_SAMPLING_BIT)) {
+bool RenderingDevice::_texture_unbounded_eligible(const Texture *p_texture, UniformType p_type) const {
+	// GPU-driven rendering (fork): what a texture must be to sit in an unbounded slot of the given
+	// kind. Views (an owner) and shared fallbacks stay out: their trackers belong to somebody else.
+	const uint32_t needed = (p_type == UNIFORM_TYPE_IMAGE) ? TEXTURE_USAGE_STORAGE_BIT : TEXTURE_USAGE_SAMPLING_BIT;
+	if (!(p_texture->usage_flags & needed)) {
 		return false;
 	}
-	if (p_texture->usage_flags & (TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | TEXTURE_USAGE_DEPTH_RESOLVE_ATTACHMENT_BIT | TEXTURE_USAGE_INPUT_ATTACHMENT_BIT | TEXTURE_USAGE_STORAGE_BIT)) {
+	return !p_texture->owner.is_valid() && p_texture->shared_fallback == nullptr;
+}
+
+RDG::ResourceUsage RenderingDevice::_unbounded_usage(UniformType p_type) {
+	return (p_type == UNIFORM_TYPE_IMAGE) ? RDG::RESOURCE_USAGE_STORAGE_IMAGE_READ_WRITE : RDG::RESOURCE_USAGE_TEXTURE_SAMPLE;
+}
+
+void RenderingDevice::_unbounded_hold(UniformSet *p_set, UniformSet::UnboundedBinding &p_binding, uint32_t p_index, RID p_texture_rid, Texture *p_texture) {
+	// The slot is empty (released first). Tracked textures ride the set's trackers; untracked ones
+	// are counted, and the count is what keeps them immutable.
+	_texture_check_pending_clear(p_texture_rid, p_texture);
+	if (p_binding.type == UNIFORM_TYPE_IMAGE && _texture_make_mutable(p_texture, p_texture_rid)) {
+		draw_graph.add_synchronization();
+	}
+	_check_transfer_worker_texture(p_texture);
+	if (p_texture->draw_tracker != nullptr) {
+		p_set->draw_trackers.push_back(p_texture->draw_tracker);
+		p_set->draw_trackers_usage.push_back(_unbounded_usage(p_binding.type));
+	} else {
+		p_texture->unbounded_refs++;
+	}
+	p_binding.slots.write[p_index] = p_texture_rid;
+}
+
+void RenderingDevice::_unbounded_release(RID p_set_rid, UniformSet *p_set, UniformSet::UnboundedBinding &p_binding, uint32_t p_index) {
+	RID previous = p_binding.slots[p_index];
+	if (previous.is_null()) {
+		return;
+	}
+	p_binding.slots.write[p_index] = RID();
+	Texture *texture = texture_owner.get_or_null(previous);
+	if (texture != nullptr) {
+		if (texture->draw_tracker != nullptr) {
+			// Remove ONE (tracker, usage) entry: a texture in two slots was pushed twice.
+			const RDG::ResourceUsage usage = _unbounded_usage(p_binding.type);
+			for (int i = 0; i < p_set->draw_trackers.size(); i++) {
+				if (p_set->draw_trackers[i] == texture->draw_tracker && p_set->draw_trackers_usage[i] == usage) {
+					p_set->draw_trackers.remove_at(i);
+					p_set->draw_trackers_usage.remove_at(i);
+					break;
+				}
+			}
+		} else if (texture->unbounded_refs > 0) {
+			texture->unbounded_refs--;
+		}
+	}
+	// The dependency edge goes when no slot of this set holds the texture any more.
+	for (const UniformSet::UnboundedBinding &ub : p_set->unbounded) {
+		for (const RID &slot : ub.slots) {
+			if (slot == previous) {
+				return;
+			}
+		}
+	}
+	if (!p_set->fixed_dependencies.has(previous)) {
+		_remove_dependency(p_set_rid, previous);
+	}
+}
+
+bool RenderingDevice::_unbounded_forget(RID p_set_rid, UniformSet *p_set, RID p_texture_rid) {
+	// A texture being freed: empty every slot holding it. Returns false when the set also depends on
+	// it through a fixed binding, in which case the caller frees the set as Godot always has.
+	if (p_set->fixed_dependencies.has(p_texture_rid)) {
 		return false;
 	}
-	return p_texture->draw_tracker == nullptr && !p_texture->owner.is_valid() && p_texture->shared_fallback == nullptr && !p_texture->pending_clear;
+	uint32_t emptied = 0;
+	for (UniformSet::UnboundedBinding &ub : p_set->unbounded) {
+		for (int i = 0; i < ub.slots.size(); i++) {
+			if (ub.slots[i] == p_texture_rid) {
+				_unbounded_release(p_set_rid, p_set, ub, i);
+				emptied++;
+			}
+		}
+	}
+	if (emptied > 0) {
+		WARN_PRINT(vformat("Texture %s was freed while %d slot(s) of an unbounded uniform binding held it; those descriptors dangle until rewritten, and a shader that indexes one reads freed memory.", itos(p_texture_rid.get_id()), emptied));
+	}
+	return emptied > 0;
 }
 
 uint32_t RenderingDevice::uniform_set_unbounded_capacity() const {
@@ -4885,24 +4988,21 @@ void RenderingDevice::uniform_set_update_texture(RID p_uniform_set, uint32_t p_b
 
 	UniformSet *us = uniform_set_owner.get_or_null(p_uniform_set);
 	ERR_FAIL_NULL(us);
-	ERR_FAIL_COND_MSG(us->unbounded_binding == UINT32_MAX, "This uniform set has no unbounded binding.");
-	ERR_FAIL_COND_MSG(p_binding != us->unbounded_binding, vformat("Binding %d is not this uniform set's unbounded binding (%d).", p_binding, us->unbounded_binding));
-	ERR_FAIL_COND_MSG(p_index >= (uint32_t)us->unbounded_slots.size(), vformat("Slot %d is past the unbounded capacity (%d).", p_index, us->unbounded_slots.size()));
-	Texture *texture = texture_owner.get_or_null(p_texture);
-	ERR_FAIL_NULL_MSG(texture, "The texture is not valid. To empty a slot, write a fallback texture into it.");
-	ERR_FAIL_COND_MSG(!_texture_unbounded_eligible(texture), "The texture cannot sit in an unbounded binding: it must be a sampling-usable, non-attachment texture with no tracker, no owner and no shared fallback.");
-
-	_check_transfer_worker_texture(texture);
-
-	RID previous = us->unbounded_slots[p_index];
-	if (previous.is_valid()) {
-		Texture *previous_texture = texture_owner.get_or_null(previous);
-		if (previous_texture != nullptr && previous_texture->unbounded_refs > 0) {
-			previous_texture->unbounded_refs--;
+	UniformSet::UnboundedBinding *ub = nullptr;
+	for (UniformSet::UnboundedBinding &candidate : us->unbounded) {
+		if (candidate.binding == p_binding) {
+			ub = &candidate;
 		}
 	}
-	us->unbounded_slots.write[p_index] = p_texture;
-	texture->unbounded_refs++;
+	ERR_FAIL_NULL_MSG(ub, vformat("Binding %d is not an unbounded binding of this uniform set.", p_binding));
+	ERR_FAIL_COND_MSG(p_index >= (uint32_t)ub->slots.size(), vformat("Slot %d is past the unbounded capacity (%d).", p_index, ub->slots.size()));
+	Texture *texture = texture_owner.get_or_null(p_texture);
+	ERR_FAIL_NULL_MSG(texture, "The texture is not valid. To empty a slot, write a fallback texture into it.");
+	ERR_FAIL_COND_MSG(!_texture_unbounded_eligible(texture, ub->type), "The texture cannot sit in this unbounded binding: it needs the usage the binding kind samples or stores through (SAMPLING for a texture binding, STORAGE for an image binding), and no owner or shared fallback.");
+
+	_unbounded_release(p_uniform_set, us, *ub, p_index);
+	_unbounded_hold(us, *ub, p_index, p_texture, texture);
+	_add_dependency(p_uniform_set, p_texture);
 
 	driver->uniform_set_update_texture(us->driver_id, p_binding, p_index, texture->driver_id);
 }
@@ -7630,7 +7730,7 @@ bool RenderingDevice::_texture_make_mutable(Texture *p_texture, RID p_texture_id
 	} else if (p_texture->unbounded_refs > 0) {
 		// GPU-driven rendering (fork): no tracker is ever walked for an unbounded slot, so a texture
 		// held in one may not start needing layout transitions. Overwrite its slots first.
-		ERR_FAIL_V_MSG(false, vformat("A texture held by %d slot(s) of an unbounded uniform binding is immutable; overwrite those slots before writing to, copying into, or attaching the texture.", p_texture->unbounded_refs));
+		ERR_FAIL_V_MSG(false, vformat("A texture that had no tracker when it was put in %d slot(s) of an unbounded uniform binding is immutable while it stays there; overwrite those slots first (a texture created with STORAGE or attachment usage is tracked and has no such rule).", p_texture->unbounded_refs));
 	} else {
 		if (p_texture->owner.is_valid()) {
 			// Texture has an owner.
@@ -7850,12 +7950,6 @@ void RenderingDevice::_free_internal(RID p_id) {
 			}
 		}
 
-		if (texture->unbounded_refs > 0) {
-			// GPU-driven rendering (fork): the slots now hold a dangling descriptor. Partially-bound
-			// semantics make that legal only while no shader indexes them.
-			WARN_PRINT(vformat("Texture %s is still held by %d slot(s) of an unbounded uniform binding; a shader that indexes one of those slots now reads a freed texture.", itos(p_id.get_id()), texture->unbounded_refs));
-		}
-
 		frames[frame].textures_to_dispose_of.push_back(*texture);
 		texture_owner.free(p_id);
 	} else if (framebuffer_owner.owns(p_id)) {
@@ -7919,11 +8013,13 @@ void RenderingDevice::_free_internal(RID p_id) {
 	} else if (uniform_set_owner.owns(p_id)) {
 		UniformSet *uniform_set = uniform_set_owner.get_or_null(p_id);
 		frames[frame].uniform_sets_to_dispose_of.push_back(*uniform_set);
-		for (const RID &slot : uniform_set->unbounded_slots) {
-			// GPU-driven rendering (fork): the set's slots stop holding their textures.
-			Texture *slot_texture = slot.is_valid() ? texture_owner.get_or_null(slot) : nullptr;
-			if (slot_texture != nullptr && slot_texture->unbounded_refs > 0) {
-				slot_texture->unbounded_refs--;
+		for (const UniformSet::UnboundedBinding &ub : uniform_set->unbounded) {
+			// GPU-driven rendering (fork): the set's slots stop holding their untracked textures.
+			for (const RID &slot : ub.slots) {
+				Texture *slot_texture = slot.is_valid() ? texture_owner.get_or_null(slot) : nullptr;
+				if (slot_texture != nullptr && slot_texture->draw_tracker == nullptr && slot_texture->unbounded_refs > 0) {
+					slot_texture->unbounded_refs--;
+				}
 			}
 		}
 		uniform_set_owner.free(p_id);

@@ -1168,10 +1168,19 @@ private:
 		Vector<RID> acceleration_structures; // Used for validation.
 		InvalidationCallback invalidated_callback = nullptr;
 		void *invalidated_callback_userdata = nullptr;
-		// GPU-driven rendering (fork): the unbounded binding, if any, and the texture in each of its
-		// slots (RID() where empty) — what the reference counts on Texture are reconciled against.
-		uint32_t unbounded_binding = UINT32_MAX;
-		Vector<RID> unbounded_slots;
+		// GPU-driven rendering (fork): the set's unbounded bindings and the texture in each slot
+		// (RID() where empty). A slot's texture is either TRACKED — it had a tracker when slotted, and
+		// the set carries that tracker so the graph transitions it like any bound texture — or
+		// UNTRACKED, counted in Texture::unbounded_refs and immutable while counted. Every slot
+		// texture is a dependency of the set, but freeing one empties its slots instead of freeing
+		// the set; `fixed_dependencies` says which dependencies are NOT slots and do free it.
+		struct UnboundedBinding {
+			uint32_t binding = 0;
+			UniformType type = UNIFORM_TYPE_TEXTURE; // UNIFORM_TYPE_TEXTURE (sampled) or UNIFORM_TYPE_IMAGE (storage).
+			Vector<RID> slots;
+		};
+		Vector<UnboundedBinding> unbounded;
+		HashSet<RID> fixed_dependencies;
 	};
 
 	RID_Owner<UniformSet, true> uniform_set_owner;
@@ -1750,7 +1759,11 @@ private:
 	/***********************/
 
 	bool _texture_make_mutable(Texture *p_texture, RID p_texture_id);
-	bool _texture_unbounded_eligible(const Texture *p_texture) const;
+	bool _texture_unbounded_eligible(const Texture *p_texture, UniformType p_type) const;
+	void _unbounded_hold(UniformSet *p_set, UniformSet::UnboundedBinding &p_binding, uint32_t p_index, RID p_texture_rid, Texture *p_texture);
+	void _unbounded_release(RID p_set_rid, UniformSet *p_set, UniformSet::UnboundedBinding &p_binding, uint32_t p_index);
+	bool _unbounded_forget(RID p_set_rid, UniformSet *p_set, RID p_texture_rid);
+	static RDG::ResourceUsage _unbounded_usage(UniformType p_type);
 	bool _buffer_make_mutable(Buffer *p_buffer, RID p_buffer_id);
 	bool _vertex_array_make_mutable(VertexArray *p_vertex_array, RID p_resource_id, RDG::ResourceTracker *p_resource_tracker);
 	bool _index_array_make_mutable(IndexArray *p_index_array, RDG::ResourceTracker *p_resource_tracker);

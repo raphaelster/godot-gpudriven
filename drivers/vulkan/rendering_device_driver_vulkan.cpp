@@ -1042,6 +1042,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 			gpu_driven_capabilities.descriptor_indexing = device_features_vk_1_2.descriptorIndexing &&
 					device_features_vk_1_2.shaderSampledImageArrayNonUniformIndexing &&
 					device_features_vk_1_2.shaderStorageBufferArrayNonUniformIndexing &&
+					device_features_vk_1_2.shaderStorageImageArrayNonUniformIndexing &&
 					device_features_vk_1_2.runtimeDescriptorArray &&
 					device_features_vk_1_2.descriptorBindingPartiallyBound &&
 					device_features_vk_1_2.descriptorBindingVariableDescriptorCount &&
@@ -1406,6 +1407,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 		vulkan_1_2_features.descriptorIndexing = VK_TRUE;
 		vulkan_1_2_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 		vulkan_1_2_features.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+		vulkan_1_2_features.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
 		vulkan_1_2_features.runtimeDescriptorArray = VK_TRUE;
 		vulkan_1_2_features.descriptorBindingPartiallyBound = VK_TRUE;
 		vulkan_1_2_features.descriptorBindingVariableDescriptorCount = VK_TRUE;
@@ -4329,16 +4331,14 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 	String error_text; // Declared here rather than at the module loop so the binding pass can fill it.
 	Vector<Vector<VkDescriptorSetLayoutBinding>> vk_set_bindings;
 	vk_set_bindings.resize(shader_refl.uniform_sets.size());
-	shader_info.vk_unbounded_binding.resize(shader_refl.uniform_sets.size());
+	shader_info.vk_unbounded_bindings.resize(shader_refl.uniform_sets.size());
 	for (uint32_t i = 0; i < shader_refl.uniform_sets.size(); i++) {
-		uint32_t set_unbounded_binding = UINT32_MAX;
-		uint32_t set_highest_binding = 0;
+		Vector<UnboundedBinding> set_unbounded;
 		for (uint32_t j = 0; j < shader_refl.uniform_sets[i].size(); j++) {
 			const ShaderUniform &uniform = shader_refl.uniform_sets[i][j];
-			set_highest_binding = MAX(set_highest_binding, uniform.binding);
-			if (uniform.length == 0 && uniform.type != UNIFORM_TYPE_TEXTURE && uniform.type != UNIFORM_TYPE_UNIFORM_BUFFER && uniform.type != UNIFORM_TYPE_STORAGE_BUFFER && uniform.type != UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC && uniform.type != UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC && uniform.type != UNIFORM_TYPE_INPUT_ATTACHMENT) {
-				// GPU-driven rendering (fork): only a sampled texture may be a runtime array.
-				error_text = vformat("Set %d binding %d is a runtime array of a type other than a sampled texture, which is not supported.", i, uniform.binding);
+			if (uniform.length == 0 && uniform.type != UNIFORM_TYPE_TEXTURE && uniform.type != UNIFORM_TYPE_IMAGE && uniform.type != UNIFORM_TYPE_UNIFORM_BUFFER && uniform.type != UNIFORM_TYPE_STORAGE_BUFFER && uniform.type != UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC && uniform.type != UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC && uniform.type != UNIFORM_TYPE_INPUT_ATTACHMENT) {
+				// GPU-driven rendering (fork): only a sampled texture or a storage image may be a runtime array.
+				error_text = vformat("Set %d binding %d is a runtime array of a type other than a sampled texture or a storage image, which is not supported.", i, uniform.binding);
 			}
 			VkDescriptorSetLayoutBinding layout_binding = {};
 			layout_binding.binding = uniform.binding;
@@ -4378,16 +4378,22 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 						// GPU-driven rendering (fork): a runtime array reflects as length 0 and is UNBOUNDED.
 						if (unbounded_capacity == 0) {
 							error_text = vformat("Set %d binding %d is a runtime array of textures, which this device does not support.", i, uniform.binding);
-						} else if (set_unbounded_binding != UINT32_MAX) {
-							error_text = vformat("Set %d has two runtime-array bindings (%d and %d); Vulkan allows one per set.", i, set_unbounded_binding, uniform.binding);
 						}
 						layout_binding.descriptorCount = unbounded_capacity;
-						set_unbounded_binding = uniform.binding;
+						set_unbounded.push_back({ uniform.binding, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE });
 					}
 				} break;
 				case UNIFORM_TYPE_IMAGE: {
 					layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 					layout_binding.descriptorCount = uniform.length;
+					if (uniform.length == 0) {
+						// GPU-driven rendering (fork): an unbounded storage-image binding.
+						if (unbounded_capacity == 0) {
+							error_text = vformat("Set %d binding %d is a runtime array of images, which this device does not support.", i, uniform.binding);
+						}
+						layout_binding.descriptorCount = unbounded_capacity;
+						set_unbounded.push_back({ uniform.binding, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE });
+					}
 				} break;
 				case UNIFORM_TYPE_TEXTURE_BUFFER: {
 					layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
@@ -4421,12 +4427,7 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 
 			vk_set_bindings.write[i].push_back(layout_binding);
 		}
-		// GPU-driven rendering (fork): a variable-count binding must carry the set's highest binding
-		// number (VUID-VkDescriptorSetLayoutBindingFlagsCreateInfo-pBindingFlags-03004).
-		if (set_unbounded_binding != UINT32_MAX && set_unbounded_binding != set_highest_binding && error_text.is_empty()) {
-			error_text = vformat("Set %d: the runtime-array binding (%d) must have the highest binding number in its set (%d).", i, set_unbounded_binding, set_highest_binding);
-		}
-		shader_info.vk_unbounded_binding[i] = set_unbounded_binding;
+		shader_info.vk_unbounded_bindings.write[i] = set_unbounded;
 	}
 
 	// Modules.
@@ -4547,13 +4548,20 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 			layout_create_info.bindingCount = vk_set_bindings[i].size();
 			layout_create_info.pBindings = vk_set_bindings[i].ptr();
 
-			// GPU-driven rendering (fork): the unbounded binding's flags, in pBindings order.
+			// GPU-driven rendering (fork): the unbounded bindings' flags, in pBindings order. Every
+			// unbounded binding is laid out at the full capacity, so none needs the variable-count
+			// flag and there is no "highest binding" constraint.
 			VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags_info = {};
 			LocalVector<VkDescriptorBindingFlags> binding_flags;
-			if (shader_info.vk_unbounded_binding[i] != UINT32_MAX) {
+			if (!shader_info.vk_unbounded_bindings[i].is_empty()) {
 				binding_flags.resize(vk_set_bindings[i].size());
 				for (uint32_t j = 0; j < vk_set_bindings[i].size(); j++) {
-					binding_flags[j] = (vk_set_bindings[i][j].binding == shader_info.vk_unbounded_binding[i]) ? (VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT) : 0;
+					binding_flags[j] = 0;
+					for (const UnboundedBinding &ub : shader_info.vk_unbounded_bindings[i]) {
+						if (vk_set_bindings[i][j].binding == ub.binding) {
+							binding_flags[j] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+						}
+					}
 				}
 				binding_flags_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
 				binding_flags_info.bindingCount = binding_flags.size();
@@ -4784,8 +4792,19 @@ RDD::UniformSetID RenderingDeviceDriverVulkan::uniform_set_create(VectorView<Bou
 	}
 	// GPU-driven rendering (fork): a set holding an unbounded binding is never pooled or linear.
 	const ShaderInfo *unbounded_shader_info = (const ShaderInfo *)p_shader.id;
-	const uint32_t unbounded_binding = p_set_index < unbounded_shader_info->vk_unbounded_binding.size() ? unbounded_shader_info->vk_unbounded_binding[p_set_index] : UINT32_MAX;
-	if (unbounded_binding != UINT32_MAX) {
+	Vector<UnboundedBinding> unbounded_bindings;
+	if ((int)p_set_index < unbounded_shader_info->vk_unbounded_bindings.size()) {
+		unbounded_bindings = unbounded_shader_info->vk_unbounded_bindings[p_set_index];
+	}
+	auto is_unbounded = [&unbounded_bindings](uint32_t p_binding) {
+		for (const UnboundedBinding &ub : unbounded_bindings) {
+			if (ub.binding == p_binding) {
+				return true;
+			}
+		}
+		return false;
+	};
+	if (!unbounded_bindings.is_empty()) {
 		p_linear_pool_index = -1;
 	}
 	DescriptorSetPoolKey pool_key;
@@ -5013,7 +5032,8 @@ RDD::UniformSetID RenderingDeviceDriverVulkan::uniform_set_create(VectorView<Bou
 			}
 		}
 
-		if (uniform.binding == unbounded_binding) {
+		const bool binding_is_unbounded = is_unbounded(uniform.binding);
+		if (binding_is_unbounded) {
 			// GPU-driven rendering (fork): the slots the caller filled at creation are written now;
 			// an empty binding writes nothing (partially bound), and the capacity is not pool material.
 			ERR_FAIL_COND_V_MSG(num_descriptors > unbounded_capacity, UniformSetID(), vformat("Unbounded binding %d was given %d textures; the capacity is %d.", uniform.binding, num_descriptors, unbounded_capacity));
@@ -5028,16 +5048,16 @@ RDD::UniformSetID RenderingDeviceDriverVulkan::uniform_set_create(VectorView<Bou
 			writes_amount++;
 		}
 
-		if (uniform.binding != unbounded_binding) {
+		if (!binding_is_unbounded) {
 			ERR_FAIL_COND_V_MSG(pool_key.uniform_type[uniform.type] == MAX_UNIFORM_POOL_ELEMENT, UniformSetID(), "Uniform set reached the limit of bindings for the same type (" + itos(MAX_UNIFORM_POOL_ELEMENT) + ").");
 			pool_key.uniform_type[uniform.type] += num_descriptors;
 		}
 	}
 
-	if (unbounded_binding != UINT32_MAX) {
+	if (!unbounded_bindings.is_empty()) {
 		// GPU-driven rendering (fork): one pool per unbounded set, sized for exactly this set, with
 		// update-after-bind on the pool, and the binding allocated at its variable capacity.
-		VkDescriptorPoolSize vk_sizes[UNIFORM_TYPE_MAX + 1];
+		VkDescriptorPoolSize vk_sizes[UNIFORM_TYPE_MAX + 2];
 		uint32_t vk_sizes_count = 0;
 		static const VkDescriptorType pool_type_of[UNIFORM_TYPE_MAX] = {
 			VK_DESCRIPTOR_TYPE_SAMPLER, // UNIFORM_TYPE_SAMPLER
@@ -5062,9 +5082,21 @@ RDD::UniformSetID RenderingDeviceDriverVulkan::uniform_set_create(VectorView<Bou
 				vk_sizes_count++;
 			}
 		}
-		vk_sizes[vk_sizes_count].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-		vk_sizes[vk_sizes_count].descriptorCount = unbounded_capacity;
-		vk_sizes_count++;
+		// One pool size per descriptor type the unbounded bindings use, each at the capacity times
+		// the number of such bindings.
+		for (const VkDescriptorType t : { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE }) {
+			uint32_t n = 0;
+			for (const UnboundedBinding &ub : unbounded_bindings) {
+				if (ub.type == t) {
+					n++;
+				}
+			}
+			if (n > 0) {
+				vk_sizes[vk_sizes_count].type = t;
+				vk_sizes[vk_sizes_count].descriptorCount = unbounded_capacity * n;
+				vk_sizes_count++;
+			}
+		}
 
 		VkDescriptorPoolCreateInfo pool_create_info = {};
 		pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -5076,15 +5108,8 @@ RDD::UniformSetID RenderingDeviceDriverVulkan::uniform_set_create(VectorView<Bou
 		VkResult res = vkCreateDescriptorPool(vk_device, &pool_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DESCRIPTOR_POOL), &vk_pool);
 		ERR_FAIL_COND_V_MSG(res, UniformSetID(), vformat("Couldn't create the descriptor pool for an unbounded uniform set (VkResult error %d).", res));
 
-		uint32_t variable_count = unbounded_capacity;
-		VkDescriptorSetVariableDescriptorCountAllocateInfo variable_info = {};
-		variable_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-		variable_info.descriptorSetCount = 1;
-		variable_info.pDescriptorCounts = &variable_count;
-
 		VkDescriptorSetAllocateInfo allocate_info = {};
 		allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		allocate_info.pNext = &variable_info;
 		allocate_info.descriptorPool = vk_pool;
 		allocate_info.descriptorSetCount = 1;
 		allocate_info.pSetLayouts = &unbounded_shader_info->vk_descriptor_set_layouts[p_set_index];
@@ -5103,7 +5128,7 @@ RDD::UniformSetID RenderingDeviceDriverVulkan::uniform_set_create(VectorView<Bou
 		UniformSetInfo *usi = VersatileResource::allocate<UniformSetInfo>(resources_allocator);
 		usi->vk_descriptor_set = vk_descriptor_set;
 		usi->vk_unbounded_pool = vk_pool;
-		usi->unbounded_binding = unbounded_binding;
+		usi->unbounded_bindings = unbounded_bindings;
 		usi->dynamic_buffers.resize(num_dynamic_buffers);
 		for (uint32_t i = 0u; i < num_dynamic_buffers; ++i) {
 			usi->dynamic_buffers[i] = dynamic_buffers[i];
@@ -5191,19 +5216,25 @@ void RenderingDeviceDriverVulkan::uniform_set_update_texture(UniformSetID p_unif
 	// GPU-driven rendering (fork). Update-after-bind lets this land while the set is bound in a
 	// pending command buffer; the caller keeps the slots an in-flight frame reads untouched.
 	const UniformSetInfo *usi = (const UniformSetInfo *)p_uniform_set.id;
-	ERR_FAIL_COND_MSG(usi->unbounded_binding != p_binding, vformat("Binding %d of this uniform set is not its unbounded binding.", p_binding));
+	VkDescriptorType type = VK_DESCRIPTOR_TYPE_MAX_ENUM;
+	for (const UnboundedBinding &ub : usi->unbounded_bindings) {
+		if (ub.binding == p_binding) {
+			type = ub.type;
+		}
+	}
+	ERR_FAIL_COND_MSG(type == VK_DESCRIPTOR_TYPE_MAX_ENUM, vformat("Binding %d of this uniform set is not an unbounded binding.", p_binding));
 	ERR_FAIL_COND_MSG(p_index >= unbounded_capacity, vformat("Slot %d is past the unbounded capacity (%d).", p_index, unbounded_capacity));
 	const TextureInfo *tex_info = (const TextureInfo *)p_texture.id;
 	VkDescriptorImageInfo img_info = {};
 	img_info.imageView = tex_info->vk_view;
-	img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	img_info.imageLayout = (type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	VkWriteDescriptorSet write = {};
 	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	write.dstSet = usi->vk_descriptor_set;
 	write.dstBinding = p_binding;
 	write.dstArrayElement = p_index;
 	write.descriptorCount = 1;
-	write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	write.descriptorType = type;
 	write.pImageInfo = &img_info;
 	vkUpdateDescriptorSets(vk_device, 1, &write, 0, nullptr);
 }
