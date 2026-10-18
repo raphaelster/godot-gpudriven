@@ -96,12 +96,16 @@ Ref<RenderingShaderContainer> RenderingShaderContainerFormatVulkan::create_conta
 	return memnew(RenderingShaderContainerVulkan(debug_info_enabled));
 }
 
+// GPU-driven rendering (fork): the device is Vulkan 1.3 or nothing (rendering_device_driver_vulkan.cpp,
+// _check_device_capabilities), so shaders compile against that target and SPIR-V 1.6 — which is
+// what puts physical storage buffers (GL_EXT_buffer_reference), int64 and non-uniform indexing in
+// core rather than behind extension declarations glslang has to be coaxed into emitting.
 RenderingDeviceCommons::ShaderLanguageVersion RenderingShaderContainerFormatVulkan::get_shader_language_version() const {
-	return SHADER_LANGUAGE_VULKAN_VERSION_1_1;
+	return SHADER_LANGUAGE_VULKAN_VERSION_1_3;
 }
 
 RenderingDeviceCommons::ShaderSpirvVersion RenderingShaderContainerFormatVulkan::get_shader_spirv_version() const {
-	return SHADER_SPIRV_VERSION_1_4;
+	return SHADER_SPIRV_VERSION_1_6;
 }
 
 void RenderingShaderContainerFormatVulkan::set_debug_info_enabled(bool p_debug_info_enabled) {

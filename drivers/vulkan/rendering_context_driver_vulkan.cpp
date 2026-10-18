@@ -695,7 +695,11 @@ Error RenderingContextDriverVulkan::_initialize_instance() {
 	// We'll set application version to the Vulkan version we're developing against, even if our instance is based on an older Vulkan
 	// version, devices can still support newer versions of Vulkan. The exception is when we're on Vulkan 1.0, we should not set this
 	// to anything but 1.0. Note that this value is only used by validation layers to warn us about version issues.
-	uint32_t application_api_version = instance_api_version == VK_API_VERSION_1_0 ? VK_API_VERSION_1_0 : VK_API_VERSION_1_2;
+	// GPU-driven rendering (fork): 1.3, since the device must be 1.3 (rendering_device_driver_vulkan.cpp,
+	// _check_device_capabilities) and shaders are compiled for that target. The validation layer
+	// takes its "semantics" from THIS value: at 1.2 it rejected every SPIR-V 1.6 module and read
+	// VkPhysicalDeviceMaintenance4Properties::maxBufferSize as 0, which was how the gap showed up.
+	uint32_t application_api_version = instance_api_version == VK_API_VERSION_1_0 ? VK_API_VERSION_1_0 : VK_API_VERSION_1_3;
 
 	CharString cs = GLOBAL_GET("application/config/name").operator String().utf8();
 	VkApplicationInfo app_info = {};

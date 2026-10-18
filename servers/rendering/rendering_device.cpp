@@ -6569,7 +6569,42 @@ void RenderingDevice::draw_list_draw_indirect_count(DrawListID p_list, bool p_us
 	_check_transfer_worker_buffer(count_buffer);
 }
 
+void RenderingDevice::draw_list_use_buffer(DrawListID p_list, RID p_buffer, BufferAccess p_access) {
+	// GPU-driven rendering (fork): see the header. This is draw_list_draw_indirect's tracker
+	// bookkeeping lifted out on its own, for a buffer the shader reaches by device address.
+	ERR_RENDER_THREAD_GUARD();
+
+	ERR_FAIL_COND(!draw_list.active);
+
+	Buffer *buffer = _get_buffer_from_owner(p_buffer);
+	ERR_FAIL_NULL_MSG(buffer, "Buffer argument is not a valid buffer of any type.");
+
+	RDG::ResourceUsage usage = RDG::RESOURCE_USAGE_STORAGE_BUFFER_READ;
+	switch (p_access) {
+		case BUFFER_ACCESS_READ:
+			break;
+		case BUFFER_ACCESS_READ_WRITE:
+			usage = RDG::RESOURCE_USAGE_STORAGE_BUFFER_READ_WRITE;
+			_buffer_make_mutable(buffer, p_buffer);
+			break;
+		case BUFFER_ACCESS_INDIRECT:
+			ERR_FAIL_COND_MSG(!buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Buffer provided was not created to do indirect draws (STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT).");
+			usage = RDG::RESOURCE_USAGE_INDIRECT_BUFFER_READ;
+			break;
+	}
+
+	if (buffer->draw_tracker != nullptr) {
+		draw_graph.add_draw_list_usage(buffer->draw_tracker, usage);
+	}
+
+	_check_transfer_worker_buffer(buffer);
+}
+
 void RenderingDevice::draw_list_set_viewport(DrawListID p_list, const Rect2 &p_rect) {
+	// GPU-driven rendering (fork): bound to scripts/extensions (it was engine-internal), so a
+	// shadow atlas can draw N tiles in ONE draw list by moving the viewport (and scissor) per tile.
+	ERR_RENDER_THREAD_GUARD();
+
 	ERR_FAIL_COND(!draw_list.active);
 
 	if (p_rect.get_area() == 0) {
@@ -6813,7 +6848,8 @@ void RenderingDevice::raytracing_list_set_push_constant(RaytracingListID p_list,
 	ERR_FAIL_COND(p_list != ID_TYPE_RAYTRACING_LIST);
 	ERR_FAIL_COND(!raytracing_list.active);
 
-	ERR_FAIL_COND_MSG(p_data_size > MAX_PUSH_CONSTANT_SIZE, "Push constants can't be bigger than 128 bytes to maintain compatibility.");
+	// GPU-driven rendering (fork): capped by the DEVICE, not by Vulkan's 128-byte minimum.
+	ERR_FAIL_COND_MSG(p_data_size > MIN(MAX_PUSH_CONSTANT_SIZE, (uint32_t)driver->limit_get(LIMIT_MAX_PUSH_CONSTANT_SIZE)), "Push constants can't be bigger than " + itos(MIN(MAX_PUSH_CONSTANT_SIZE, (uint32_t)driver->limit_get(LIMIT_MAX_PUSH_CONSTANT_SIZE))) + " bytes on this device.");
 
 #ifdef DEBUG_ENABLED
 	ERR_FAIL_COND_MSG(p_data_size != raytracing_list.validation.pipeline_push_constant_size,
@@ -7089,7 +7125,8 @@ void RenderingDevice::compute_list_set_push_constant(ComputeListID p_list, const
 
 	ERR_FAIL_COND(p_list != ID_TYPE_COMPUTE_LIST);
 	ERR_FAIL_COND(!compute_list.active);
-	ERR_FAIL_COND_MSG(p_data_size > MAX_PUSH_CONSTANT_SIZE, "Push constants can't be bigger than 128 bytes to maintain compatibility.");
+	// GPU-driven rendering (fork): capped by the DEVICE, not by Vulkan's 128-byte minimum.
+	ERR_FAIL_COND_MSG(p_data_size > MIN(MAX_PUSH_CONSTANT_SIZE, (uint32_t)driver->limit_get(LIMIT_MAX_PUSH_CONSTANT_SIZE)), "Push constants can't be bigger than " + itos(MIN(MAX_PUSH_CONSTANT_SIZE, (uint32_t)driver->limit_get(LIMIT_MAX_PUSH_CONSTANT_SIZE))) + " bytes on this device.");
 
 #ifdef DEBUG_ENABLED
 	ERR_FAIL_COND_MSG(p_data_size != compute_list.validation.pipeline_push_constant_size,
@@ -7364,6 +7401,37 @@ void RenderingDevice::compute_list_dispatch_indirect(ComputeListID p_list, RID p
 
 	if (buffer->draw_tracker != nullptr) {
 		draw_graph.add_compute_list_usage(buffer->draw_tracker, RDG::RESOURCE_USAGE_INDIRECT_BUFFER_READ);
+	}
+
+	_check_transfer_worker_buffer(buffer);
+}
+
+void RenderingDevice::compute_list_use_buffer(ComputeListID p_list, RID p_buffer, BufferAccess p_access) {
+	// GPU-driven rendering (fork): the compute twin of draw_list_use_buffer.
+	ERR_RENDER_THREAD_GUARD();
+
+	ERR_FAIL_COND(p_list != ID_TYPE_COMPUTE_LIST);
+	ERR_FAIL_COND(!compute_list.active);
+
+	Buffer *buffer = _get_buffer_from_owner(p_buffer);
+	ERR_FAIL_NULL_MSG(buffer, "Buffer argument is not a valid buffer of any type.");
+
+	RDG::ResourceUsage usage = RDG::RESOURCE_USAGE_STORAGE_BUFFER_READ;
+	switch (p_access) {
+		case BUFFER_ACCESS_READ:
+			break;
+		case BUFFER_ACCESS_READ_WRITE:
+			usage = RDG::RESOURCE_USAGE_STORAGE_BUFFER_READ_WRITE;
+			_buffer_make_mutable(buffer, p_buffer);
+			break;
+		case BUFFER_ACCESS_INDIRECT:
+			ERR_FAIL_COND_MSG(!buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Buffer provided was not created to do indirect dispatch (STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT).");
+			usage = RDG::RESOURCE_USAGE_INDIRECT_BUFFER_READ;
+			break;
+	}
+
+	if (buffer->draw_tracker != nullptr) {
+		draw_graph.add_compute_list_usage(buffer->draw_tracker, usage);
 	}
 
 	_check_transfer_worker_buffer(buffer);
@@ -9481,6 +9549,8 @@ void RenderingDevice::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("draw_list_draw_indirect", "draw_list", "use_indices", "buffer", "offset", "draw_count", "stride"), &RenderingDevice::draw_list_draw_indirect, DEFVAL(0), DEFVAL(1), DEFVAL(0));
 	ClassDB::bind_method(D_METHOD("draw_list_draw_indirect_count", "draw_list", "use_indices", "buffer", "offset", "count_buffer", "count_offset", "max_draw_count", "stride"), &RenderingDevice::draw_list_draw_indirect_count, DEFVAL(0));
 
+	ClassDB::bind_method(D_METHOD("draw_list_use_buffer", "draw_list", "buffer", "access"), &RenderingDevice::draw_list_use_buffer);
+	ClassDB::bind_method(D_METHOD("draw_list_set_viewport", "draw_list", "rect"), &RenderingDevice::draw_list_set_viewport);
 	ClassDB::bind_method(D_METHOD("draw_list_enable_scissor", "draw_list", "rect"), &RenderingDevice::draw_list_enable_scissor, DEFVAL(Rect2()));
 	ClassDB::bind_method(D_METHOD("draw_list_disable_scissor", "draw_list"), &RenderingDevice::draw_list_disable_scissor);
 
@@ -9497,6 +9567,7 @@ void RenderingDevice::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("compute_list_bind_uniform_set", "compute_list", "uniform_set", "set_index"), &RenderingDevice::compute_list_bind_uniform_set);
 	ClassDB::bind_method(D_METHOD("compute_list_dispatch", "compute_list", "x_groups", "y_groups", "z_groups"), &RenderingDevice::compute_list_dispatch);
 	ClassDB::bind_method(D_METHOD("compute_list_dispatch_indirect", "compute_list", "buffer", "offset"), &RenderingDevice::compute_list_dispatch_indirect);
+	ClassDB::bind_method(D_METHOD("compute_list_use_buffer", "compute_list", "buffer", "access"), &RenderingDevice::compute_list_use_buffer);
 	ClassDB::bind_method(D_METHOD("compute_list_add_barrier", "compute_list"), &RenderingDevice::compute_list_add_barrier);
 	ClassDB::bind_method(D_METHOD("compute_list_end"), &RenderingDevice::compute_list_end);
 
@@ -9906,6 +9977,10 @@ void RenderingDevice::_bind_methods() {
 	BIND_ENUM_CONSTANT(INDEX_BUFFER_FORMAT_UINT32);
 
 	BIND_BITFIELD_FLAG(STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT);
+
+	BIND_ENUM_CONSTANT(BUFFER_ACCESS_READ);
+	BIND_ENUM_CONSTANT(BUFFER_ACCESS_READ_WRITE);
+	BIND_ENUM_CONSTANT(BUFFER_ACCESS_INDIRECT);
 
 	BIND_BITFIELD_FLAG(BUFFER_CREATION_DEVICE_ADDRESS_BIT);
 	BIND_BITFIELD_FLAG(BUFFER_CREATION_AS_STORAGE_BIT);

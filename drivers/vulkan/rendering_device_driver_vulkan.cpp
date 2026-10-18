@@ -1133,10 +1133,25 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 		}
 	}
 
-	// GPU-driven rendering (fork): this build targets desktop Vulkan 1.2+ only and REQUIRES the
+	// GPU-driven rendering (fork): this build targets desktop Vulkan 1.3+ only and REQUIRES the
 	// features its renderer is written against, rather than gating each use on a capability bit.
-	ERR_FAIL_COND_V_MSG(physical_device_properties.apiVersion < VK_API_VERSION_1_2, ERR_CANT_CREATE,
-			"This build requires a Vulkan 1.2 device; the selected GPU reports " + itos(VK_API_VERSION_MAJOR(physical_device_properties.apiVersion)) + "." + itos(VK_API_VERSION_MINOR(physical_device_properties.apiVersion)) + ".");
+	// 1.3 (not 1.2) because the renderer's shaders are compiled for that target (SPIR-V 1.6,
+	// rendering_shader_container_vulkan.cpp) and because 1.3 makes dynamicRendering,
+	// synchronization2 and maintenance4 mandatory, which is what lets _initialize_device enable
+	// them unconditionally below.
+	ERR_FAIL_COND_V_MSG(physical_device_properties.apiVersion < VK_API_VERSION_1_3, ERR_CANT_CREATE,
+			"This build requires a Vulkan 1.3 device; the selected GPU reports " + itos(VK_API_VERSION_MAJOR(physical_device_properties.apiVersion)) + "." + itos(VK_API_VERSION_MINOR(physical_device_properties.apiVersion)) + ".");
+	// The renderer addresses every buffer through GL_EXT_buffer_reference (uint64_t pointers in
+	// push constants), packs 16-bit values into storage buffers, and does 64-bit integer maths on
+	// those addresses — so these are requirements too, not enable-if-available features.
+	ERR_FAIL_COND_V_MSG(!buffer_device_address_support, ERR_CANT_CREATE,
+			"This build requires the Vulkan 1.2 bufferDeviceAddress feature, which the selected GPU does not report.");
+	ERR_FAIL_COND_V_MSG(!physical_device_features.shaderInt64, ERR_CANT_CREATE,
+			"This build requires the shaderInt64 feature, which the selected GPU does not report.");
+	ERR_FAIL_COND_V_MSG(!physical_device_features.shaderInt16, ERR_CANT_CREATE,
+			"This build requires the shaderInt16 feature, which the selected GPU does not report.");
+	ERR_FAIL_COND_V_MSG(!storage_buffer_capabilities.storage_buffer_16_bit_access_is_supported, ERR_CANT_CREATE,
+			"This build requires the Vulkan 1.1 storageBuffer16BitAccess feature, which the selected GPU does not report.");
 	ERR_FAIL_COND_V_MSG(!gpu_driven_capabilities.descriptor_indexing, ERR_CANT_CREATE,
 			"This build requires the Vulkan 1.2 descriptorIndexing feature set (non-uniform indexing, runtime descriptor arrays, partially bound, variable count, update-after-bind), which the selected GPU does not report.");
 	ERR_FAIL_COND_V_MSG(!gpu_driven_capabilities.draw_indirect_count, ERR_CANT_CREATE,
@@ -1400,7 +1415,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 		vulkan_1_2_features.pNext = create_info_next;
 		vulkan_1_2_features.shaderFloat16 = shader_capabilities.shader_float16_is_supported;
 		vulkan_1_2_features.shaderInt8 = shader_capabilities.shader_int8_is_supported;
-		vulkan_1_2_features.bufferDeviceAddress = buffer_device_address_support;
+		vulkan_1_2_features.bufferDeviceAddress = VK_TRUE; // Required at _check_device_capabilities (fork).
 		const bool memory_model = vulkan_memory_model_support && vulkan_memory_model_device_scope_support;
 		vulkan_1_2_features.vulkanMemoryModel = memory_model;
 		vulkan_1_2_features.vulkanMemoryModelDeviceScope = memory_model;
@@ -1468,13 +1483,23 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 		create_info_next = &fdm_offset_features;
 	}
 
-	VkPhysicalDevicePipelineCreationCacheControlFeatures pipeline_cache_control_features = {};
-	if (pipeline_cache_control_support) {
-		pipeline_cache_control_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_CREATION_CACHE_CONTROL_FEATURES;
-		pipeline_cache_control_features.pNext = create_info_next;
-		pipeline_cache_control_features.pipelineCreationCacheControl = pipeline_cache_control_support;
-		create_info_next = &pipeline_cache_control_features;
-	}
+	// GPU-driven rendering (fork): the device is 1.3+ (checked at _check_device_capabilities), so the
+	// 1.3 core features are enabled through the aggregate struct. It SUBSUMES
+	// VkPhysicalDevicePipelineCreationCacheControlFeatures (VUID-VkDeviceCreateInfo-pNext-02830
+	// forbids chaining both), which is why that struct no longer appears here; dynamicRendering,
+	// synchronization2 and maintenance4 are mandatory in 1.3, so enabling them needs no query.
+	VkPhysicalDeviceVulkan13Features vulkan_1_3_features = {};
+	vulkan_1_3_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+	vulkan_1_3_features.pNext = create_info_next;
+	vulkan_1_3_features.pipelineCreationCacheControl = pipeline_cache_control_support;
+	vulkan_1_3_features.dynamicRendering = VK_TRUE;
+	vulkan_1_3_features.synchronization2 = VK_TRUE;
+	vulkan_1_3_features.maintenance4 = VK_TRUE;
+	// Shaders compiled for the 1.3 / SPIR-V 1.6 target lower `discard` to OpTerminateInvocation and
+	// `demote` to OpDemoteToHelperInvocation; both capabilities need their (1.3-mandatory) feature on.
+	vulkan_1_3_features.shaderTerminateInvocation = VK_TRUE;
+	vulkan_1_3_features.shaderDemoteToHelperInvocation = VK_TRUE;
+	create_info_next = &vulkan_1_3_features;
 
 	VkPhysicalDeviceFaultFeaturesEXT device_fault_features = {};
 	if (device_fault_support) {
@@ -1527,7 +1552,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 		// In Vulkan 1.2 and newer we use a newer struct to enable various features.
 		vulkan_1_1_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
 		vulkan_1_1_features.pNext = create_info_next;
-		vulkan_1_1_features.storageBuffer16BitAccess = storage_buffer_capabilities.storage_buffer_16_bit_access_is_supported;
+		vulkan_1_1_features.storageBuffer16BitAccess = VK_TRUE; // Required at _check_device_capabilities (fork).
 		vulkan_1_1_features.uniformAndStorageBuffer16BitAccess = storage_buffer_capabilities.uniform_and_storage_buffer_16_bit_access_is_supported;
 		vulkan_1_1_features.storagePushConstant16 = storage_buffer_capabilities.storage_push_constant_16_is_supported;
 		vulkan_1_1_features.storageInputOutput16 = storage_buffer_capabilities.storage_input_output_16;

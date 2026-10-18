@@ -198,7 +198,10 @@ Error RDShaderFile::parse_versions_from_text(const String &p_text, const String 
 				code = code.replace("VERSION_DEFINES", E.value);
 				String error;
 #ifdef MODULE_GLSLANG_ENABLED
-				Vector<uint8_t> spirv = compile_glslang_shader(RD::ShaderStage(i), ShaderIncludeDB::parse_include_files(code), RD::SHADER_LANGUAGE_VULKAN_VERSION_1_1, RD::SHADER_SPIRV_VERSION_1_4, &error);
+				// GPU-driven rendering (fork): the same 1.3 / SPIR-V 1.6 target the device's shader
+				// container reports (rendering_shader_container_vulkan.cpp), so an imported .glsl and a
+				// runtime-compiled one cannot disagree about which extensions are core.
+				Vector<uint8_t> spirv = compile_glslang_shader(RD::ShaderStage(i), ShaderIncludeDB::parse_include_files(code), RD::SHADER_LANGUAGE_VULKAN_VERSION_1_3, RD::SHADER_SPIRV_VERSION_1_6, &error);
 				bytecode->set_stage_bytecode(RD::ShaderStage(i), spirv);
 #else
 				error = "Shader compilation is not supported because glslang was not enabled.";

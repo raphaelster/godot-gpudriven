@@ -1134,7 +1134,10 @@ public:
 
 private:
 	static const uint32_t MAX_UNIFORM_SETS = 16;
-	static const uint32_t MAX_PUSH_CONSTANT_SIZE = 128;
+	// GPU-driven rendering (fork): 256, up from the 128 the engine kept "to maintain compatibility"
+	// with Vulkan's guaranteed minimum. The compute and raytracing checks also cap at the DEVICE's
+	// limit, so a push constant fits iff the hardware accepts it (draw lists never had a cap here).
+	static const uint32_t MAX_PUSH_CONSTANT_SIZE = 256;
 
 	// This structure contains the descriptor set. They _need_ to be allocated
 	// for a shader (and will be erased when this shader is erased), but should
@@ -1579,6 +1582,22 @@ public:
 	// `p_count_offset`, capped by `p_max_draw_count`. Both buffers need STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT.
 	void draw_list_draw_indirect_count(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, RID p_count_buffer, uint32_t p_count_offset, uint32_t p_max_draw_count, uint32_t p_stride = 0);
 
+	// GPU-driven rendering (fork): how a list reaches a buffer it never binds. The render graph
+	// orders barriers only over resources it can see — uniform-set bindings, vertex, index and
+	// indirect buffers — and a shader that follows `buffer_reference` pointers out of a push
+	// constant binds nothing, so without a declaration the graph may reorder the list past the
+	// pass that wrote the buffer or emit no barrier between them. `*_list_use_buffer` is the
+	// per-buffer form of what binding a storage buffer does; declare each buffer ONCE per list,
+	// with the widest access the list makes (the graph refuses two usages of one resource in one
+	// list). READ_WRITE also makes a buffer mutable (gives it a tracker) if nothing else has, which
+	// is what a buffer only ever written through its address needs to be tracked at all.
+	enum BufferAccess {
+		BUFFER_ACCESS_READ,
+		BUFFER_ACCESS_READ_WRITE,
+		BUFFER_ACCESS_INDIRECT,
+	};
+	void draw_list_use_buffer(DrawListID p_list, RID p_buffer, BufferAccess p_access);
+
 	void draw_list_set_viewport(DrawListID p_list, const Rect2 &p_rect);
 	void draw_list_enable_scissor(DrawListID p_list, const Rect2 &p_rect);
 	void draw_list_disable_scissor(DrawListID p_list);
@@ -1700,6 +1719,7 @@ public:
 	void compute_list_dispatch(ComputeListID p_list, uint32_t p_x_groups, uint32_t p_y_groups, uint32_t p_z_groups);
 	void compute_list_dispatch_threads(ComputeListID p_list, uint32_t p_x_threads, uint32_t p_y_threads, uint32_t p_z_threads);
 	void compute_list_dispatch_indirect(ComputeListID p_list, RID p_buffer, uint32_t p_offset);
+	void compute_list_use_buffer(ComputeListID p_list, RID p_buffer, BufferAccess p_access); // Fork; see draw_list_use_buffer.
 	void compute_list_add_barrier(ComputeListID p_list);
 
 	void compute_list_end();
@@ -2066,6 +2086,7 @@ VARIANT_ENUM_CAST(RenderingDevice::VertexFrequency)
 VARIANT_ENUM_CAST(RenderingDevice::IndexBufferFormat)
 VARIANT_BITFIELD_CAST(RenderingDevice::StorageBufferUsage)
 VARIANT_BITFIELD_CAST(RenderingDevice::BufferCreationBits)
+VARIANT_ENUM_CAST(RenderingDevice::BufferAccess)
 VARIANT_BITFIELD_CAST(RenderingDevice::AccelerationStructureFlagBits)
 VARIANT_BITFIELD_CAST(RenderingDevice::AccelerationStructureGeometryFlagBits)
 VARIANT_BITFIELD_CAST(RenderingDevice::AccelerationStructureInstanceFlagBits)
