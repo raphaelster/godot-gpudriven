@@ -808,6 +808,8 @@ protected:
 	virtual void _render_particle_collider_heightfield(RID p_fb, const Transform3D &p_cam_transform, const Projection &p_cam_projection, const PagedArray<RenderGeometryInstance *> &p_instances) override;
 
 public:
+	virtual RID get_dfg_lut_texture() const override { return dfg_lut.texture; }
+
 	static RenderForwardClustered *get_singleton() { return singleton; }
 
 	ClusterBuilderSharedDataRD *get_cluster_builder_shared() { return &cluster_builder_shared; }

@@ -187,6 +187,9 @@ public:
 	/* SKY */
 
 	RendererRD::SkyRD *get_sky() { return &sky; }
+	// gpu-driven: the split-sum DFG table the scene shader reads (RenderData.get_dfg_lut_texture);
+	// [RID]() for a renderer without one.
+	virtual RID get_dfg_lut_texture() const { return RID(); }
 
 	/* SKY API */
 

@@ -46,4 +46,12 @@ public:
 
 	virtual RID get_environment() const = 0;
 	virtual RID get_camera_attributes() const = 0;
+
+	// gpu-driven: what an extension renderer needs to light a surface as the scene renderer does.
+	// The environment's sky radiance (Godot's prefiltered octahedral map, roughness in layers or
+	// mips) and the renderer's split-sum DFG table, both read-only, both [RID]() when the renderer
+	// has none (no sky in the environment; a renderer without the table). The scene-data uniform
+	// buffer (RenderSceneData.get_uniform_buffer) carries every parameter that goes with them.
+	virtual RID get_sky_radiance_texture() const { return RID(); }
+	virtual RID get_dfg_lut_texture() const { return RID(); }
 };

@@ -16,10 +16,22 @@
 				Returns the [RID] of the camera attributes object in the [RenderingServer] being used to render this viewport.
 			</description>
 		</method>
+		<method name="get_dfg_lut_texture" qualifiers="const">
+			<return type="RID" />
+			<description>
+				Returns the [RenderingDevice] texture holding the renderer's prefiltered split-sum DFG table (the environment BRDF the scene shader multiplies its sky reflection by), or an empty [RID] when the renderer has none.
+			</description>
+		</method>
 		<method name="get_environment" qualifiers="const">
 			<return type="RID" />
 			<description>
 				Returns the [RID] of the environment object in the [RenderingServer] being used to render this viewport.
+			</description>
+		</method>
+		<method name="get_sky_radiance_texture" qualifiers="const">
+			<return type="RID" />
+			<description>
+				Returns the [RenderingDevice] texture holding the environment's sky radiance (the prefiltered octahedral map the scene shader samples for ambient light and reflections), or an empty [RID] when the environment has no sky. Its parameters (orientation, energy, border and pixel size) are in [method RenderSceneData.get_uniform_buffer].
 			</description>
 		</method>
 		<method name="get_render_scene_buffers" qualifiers="const">

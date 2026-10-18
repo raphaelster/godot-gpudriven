@@ -45,6 +45,8 @@ public:
 
 	virtual RID get_environment() const override { return environment; }
 	virtual RID get_camera_attributes() const override { return camera_attributes; }
+	virtual RID get_sky_radiance_texture() const override; // render_data_rd.cpp
+	virtual RID get_dfg_lut_texture() const override;
 
 	// Members are publicly accessible within the render engine.
 	Ref<RenderSceneBuffersRD> render_buffers;
