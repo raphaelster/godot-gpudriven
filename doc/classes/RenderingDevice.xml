@@ -400,6 +400,40 @@
 				Submits [param draw_list] for rendering on the GPU with the given parameters stored in the [param buffer] at [param offset]. Parameters being integers: vertex count, instance count, first vertex, first instance. And when using indices: index count, instance count, first index, vertex offset, first instance. Buffer must have been created with [constant STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT] flag.
 			</description>
 		</method>
+		<method name="draw_list_draw_mesh_tasks">
+			<return type="void" />
+			<param index="0" name="draw_list" type="int" />
+			<param index="1" name="group_count_x" type="int" />
+			<param index="2" name="group_count_y" type="int" default="1" />
+			<param index="3" name="group_count_z" type="int" default="1" />
+			<description>
+				Draws with the bound mesh pipeline (a shader with a [constant SHADER_STAGE_MESH] stage, optionally led by a [constant SHADER_STAGE_TASK] stage), launching the given number of task workgroups, or mesh workgroups when there is no task stage. Requires [code]VK_EXT_mesh_shader[/code].
+			</description>
+		</method>
+		<method name="draw_list_draw_mesh_tasks_indirect">
+			<return type="void" />
+			<param index="0" name="draw_list" type="int" />
+			<param index="1" name="buffer" type="RID" />
+			<param index="2" name="offset" type="int" default="0" />
+			<param index="3" name="draw_count" type="int" default="1" />
+			<param index="4" name="stride" type="int" default="0" />
+			<description>
+				Like [method draw_list_draw_mesh_tasks], with [param draw_count] records of three group counts (12 bytes each, [param stride] apart) read from [param buffer] at [param offset]. The buffer must have been created with [constant STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT].
+			</description>
+		</method>
+		<method name="draw_list_draw_mesh_tasks_indirect_count">
+			<return type="void" />
+			<param index="0" name="draw_list" type="int" />
+			<param index="1" name="buffer" type="RID" />
+			<param index="2" name="offset" type="int" />
+			<param index="3" name="count_buffer" type="RID" />
+			<param index="4" name="count_offset" type="int" />
+			<param index="5" name="max_draw_count" type="int" />
+			<param index="6" name="stride" type="int" default="12" />
+			<description>
+				Like [method draw_list_draw_mesh_tasks_indirect], with the draw count a uint32 read from [param count_buffer] at [param count_offset] on the GPU, capped by [param max_draw_count]. Both buffers must have been created with [constant STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT].
+			</description>
+		</method>
 		<method name="draw_list_use_buffer">
 			<return type="void" />
 			<param index="0" name="draw_list" type="int" />
@@ -2812,7 +2846,13 @@
 		<constant name="SHADER_STAGE_INTERSECTION" value="9" enum="ShaderStage">
 			Intersection shader stage. The intersection shader for triangles is built-in. This can be used to compute ray intersections with primitives that are not triangles.
 		</constant>
-		<constant name="SHADER_STAGE_MAX" value="10" enum="ShaderStage">
+		<constant name="SHADER_STAGE_TASK" value="10" enum="ShaderStage">
+			Task shader stage (VK_EXT_mesh_shader). Runs before the mesh stage and decides how many mesh workgroups to launch.
+		</constant>
+		<constant name="SHADER_STAGE_MESH" value="11" enum="ShaderStage">
+			Mesh shader stage (VK_EXT_mesh_shader). Replaces the vertex stage: emits vertices and primitives directly. A pipeline with a mesh stage has no vertex format.
+		</constant>
+		<constant name="SHADER_STAGE_MAX" value="12" enum="ShaderStage">
 			Represents the size of the [enum ShaderStage] enum.
 		</constant>
 		<constant name="SHADER_STAGE_VERTEX_BIT" value="1" enum="ShaderStage">
@@ -2844,6 +2884,12 @@
 		</constant>
 		<constant name="SHADER_STAGE_INTERSECTION_BIT" value="512" enum="ShaderStage">
 			Intersection shader stage bit (see also [constant SHADER_STAGE_INTERSECTION]).
+		</constant>
+		<constant name="SHADER_STAGE_TASK_BIT" value="1024" enum="ShaderStage">
+			Task shader stage bit (see also [constant SHADER_STAGE_TASK]).
+		</constant>
+		<constant name="SHADER_STAGE_MESH_BIT" value="2048" enum="ShaderStage">
+			Mesh shader stage bit (see also [constant SHADER_STAGE_MESH]).
 		</constant>
 		<constant name="SHADER_LANGUAGE_GLSL" value="0" enum="ShaderLanguage">
 			Khronos' GLSL shading language (used natively by OpenGL and Vulkan). This is the language used for core Godot shaders.

@@ -89,6 +89,9 @@ public:
 			TYPE_DRAW_INDEXED_INDIRECT,
 			TYPE_DRAW_INDIRECT_COUNT,
 			TYPE_DRAW_INDEXED_INDIRECT_COUNT,
+			TYPE_DRAW_MESH_TASKS,
+			TYPE_DRAW_MESH_TASKS_INDIRECT,
+			TYPE_DRAW_MESH_TASKS_INDIRECT_COUNT,
 			TYPE_EXECUTE_COMMANDS,
 			TYPE_NEXT_SUBPASS,
 			TYPE_SET_BLEND_CONSTANTS,
@@ -649,6 +652,17 @@ private:
 
 	struct DrawListDrawIndexedIndirectCountInstruction : DrawListDrawIndirectCountInstruction {};
 
+	// GPU-driven rendering (fork): VK_EXT_mesh_shader's three draws.
+	struct DrawListDrawMeshTasksInstruction : DrawListInstruction {
+		uint32_t group_count_x = 0;
+		uint32_t group_count_y = 0;
+		uint32_t group_count_z = 0;
+	};
+
+	struct DrawListDrawMeshTasksIndirectInstruction : DrawListDrawIndirectInstruction {};
+
+	struct DrawListDrawMeshTasksIndirectCountInstruction : DrawListDrawIndirectCountInstruction {};
+
 	struct DrawListEndRenderPassInstruction : DrawListInstruction {
 		// No contents.
 	};
@@ -947,6 +961,9 @@ public:
 	void add_draw_list_draw_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride);
 	void add_draw_list_draw_indirect_count(RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_offset, uint32_t p_max_draw_count, uint32_t p_stride);
 	void add_draw_list_draw_indexed_indirect_count(RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_offset, uint32_t p_max_draw_count, uint32_t p_stride);
+	void add_draw_list_draw_mesh_tasks(uint32_t p_group_count_x, uint32_t p_group_count_y, uint32_t p_group_count_z);
+	void add_draw_list_draw_mesh_tasks_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride);
+	void add_draw_list_draw_mesh_tasks_indirect_count(RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_offset, uint32_t p_max_draw_count, uint32_t p_stride);
 	void add_draw_list_draw_indexed_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride);
 	void add_draw_list_execute_commands(RDD::CommandBufferID p_command_buffer);
 	void add_draw_list_next_subpass(RDD::CommandBufferType p_command_buffer_type);

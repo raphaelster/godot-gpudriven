@@ -1578,10 +1578,22 @@ public:
 	void draw_list_set_push_constant(DrawListID p_list, const void *p_data, uint32_t p_data_size);
 
 	void draw_list_draw(DrawListID p_list, bool p_use_indices, uint32_t p_instances = 1, uint32_t p_procedural_vertices = 0);
+
+private:
+	// GPU-driven rendering (fork): the validation and uniform-set binding every mesh-task draw does.
+	bool _draw_list_prepare_mesh_tasks();
+
+public:
 	void draw_list_draw_indirect(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset = 0, uint32_t p_draw_count = 1, uint32_t p_stride = 0);
 	// GPU-driven rendering (fork): the draw count is a uint32 read from `p_count_buffer` at
 	// `p_count_offset`, capped by `p_max_draw_count`. Both buffers need STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT.
 	void draw_list_draw_indirect_count(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, RID p_count_buffer, uint32_t p_count_offset, uint32_t p_max_draw_count, uint32_t p_stride = 0);
+	// GPU-driven rendering (fork): VK_EXT_mesh_shader draws, for a pipeline built from a shader with
+	// a mesh stage (and optionally a task stage). An indirect record is
+	// VkDrawMeshTasksIndirectCommandEXT: three uint32 group counts, 12 bytes.
+	void draw_list_draw_mesh_tasks(DrawListID p_list, uint32_t p_group_count_x, uint32_t p_group_count_y = 1, uint32_t p_group_count_z = 1);
+	void draw_list_draw_mesh_tasks_indirect(DrawListID p_list, RID p_buffer, uint32_t p_offset = 0, uint32_t p_draw_count = 1, uint32_t p_stride = 0);
+	void draw_list_draw_mesh_tasks_indirect_count(DrawListID p_list, RID p_buffer, uint32_t p_offset, RID p_count_buffer, uint32_t p_count_offset, uint32_t p_max_draw_count, uint32_t p_stride = 0);
 
 	// GPU-driven rendering (fork): how a list reaches a buffer it never binds. The render graph
 	// orders barriers only over resources it can see — uniform-set bindings, vertex, index and

@@ -586,6 +586,8 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 	_register_requested_device_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME, false);
 	_register_requested_device_extension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, false);
+	// GPU-driven rendering (fork): task/mesh shaders are a hard requirement.
+	_register_requested_device_extension(VK_EXT_MESH_SHADER_EXTENSION_NAME, true);
 
 	// We don't actually use this extension, but some runtime components on some platforms
 	// can and will fill the validation layers with useless info otherwise if not enabled.
@@ -932,6 +934,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 		VkPhysicalDeviceRayTracingPipelineFeaturesKHR raytracing_pipeline_features = {};
 		VkPhysicalDeviceSynchronization2FeaturesKHR sync_2_features = {};
 		VkPhysicalDeviceRayTracingValidationFeaturesNV raytracing_validation_features = {};
+		VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {};
 
 		VkPhysicalDeviceVulkan11Features device_features_vk_1_1 = {};
 		const bool use_1_2_features = physical_device_properties.apiVersion >= VK_API_VERSION_1_2;
@@ -1025,6 +1028,12 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 			sync_2_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
 			sync_2_features.pNext = next_features;
 			next_features = &sync_2_features;
+		}
+
+		if (enabled_device_extension_names.has(VK_EXT_MESH_SHADER_EXTENSION_NAME)) {
+			mesh_shader_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+			mesh_shader_features.pNext = next_features;
+			next_features = &mesh_shader_features;
 		}
 
 		VkPhysicalDeviceFeatures2 device_features_2 = {};
@@ -1131,6 +1140,11 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 			raytracing_capabilities.raytracing_pipeline_support = raytracing_pipeline_features.rayTracingPipeline;
 			raytracing_capabilities.validation = raytracing_validation_features.rayTracingValidation;
 		}
+
+		if (enabled_device_extension_names.has(VK_EXT_MESH_SHADER_EXTENSION_NAME)) {
+			gpu_driven_capabilities.task_shader = mesh_shader_features.taskShader;
+			gpu_driven_capabilities.mesh_shader = mesh_shader_features.meshShader;
+		}
 	}
 
 	// GPU-driven rendering (fork): this build targets desktop Vulkan 1.3+ only and REQUIRES the
@@ -1158,6 +1172,10 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 			"This build requires the Vulkan 1.2 drawIndirectCount feature, which the selected GPU does not report.");
 	ERR_FAIL_COND_V_MSG(!gpu_driven_capabilities.shader_draw_parameters, ERR_CANT_CREATE,
 			"This build requires the Vulkan 1.1 shaderDrawParameters feature, which the selected GPU does not report.");
+	// Every renderer draw is a task/mesh dispatch over meshlets (VK_EXT_mesh_shader); there is no
+	// vertex-shader fallback.
+	ERR_FAIL_COND_V_MSG(!gpu_driven_capabilities.task_shader || !gpu_driven_capabilities.mesh_shader, ERR_CANT_CREATE,
+			"This build requires the VK_EXT_mesh_shader taskShader and meshShader features, which the selected GPU does not report.");
 
 	if (functions.GetPhysicalDeviceProperties2 != nullptr) {
 		void *next_properties = nullptr;
@@ -1545,6 +1563,16 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 		create_info_next = &raytracing_validation_features;
 	}
 
+	// GPU-driven rendering (fork): task + mesh shaders, required at _check_device_capabilities.
+	// multiviewMeshShader / primitiveFragmentShadingRateMeshShader / meshShaderQueries stay off:
+	// nothing uses them, and each needs a further feature enabled beside it.
+	VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {};
+	mesh_shader_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+	mesh_shader_features.pNext = create_info_next;
+	mesh_shader_features.taskShader = VK_TRUE;
+	mesh_shader_features.meshShader = VK_TRUE;
+	create_info_next = &mesh_shader_features;
+
 	VkPhysicalDeviceVulkan11Features vulkan_1_1_features = {};
 	VkPhysicalDevice16BitStorageFeaturesKHR storage_features = {};
 	VkPhysicalDeviceMultiviewFeatures multiview_features = {};
@@ -1609,7 +1637,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 		}
 	}
 
-	print_verbose("Vulkan: GPU-driven features enabled: descriptor indexing (non-uniform, runtime arrays, partially bound, variable count, update-after-bind), drawIndirectCount, shaderDrawParameters.");
+	print_verbose("Vulkan: GPU-driven features enabled: descriptor indexing (non-uniform, runtime arrays, partially bound, variable count, update-after-bind), drawIndirectCount, shaderDrawParameters, task and mesh shaders.");
 
 	const RenderingContextDriverVulkan::Functions &functions = context_driver->functions_get();
 	if (functions.GetDeviceProcAddr != nullptr) {
@@ -1650,7 +1678,13 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 			device_functions.GetRayTracingShaderGroupHandlesKHR = PFN_vkGetRayTracingShaderGroupHandlesKHR(functions.GetDeviceProcAddr(vk_device, "vkGetRayTracingShaderGroupHandlesKHR"));
 			device_functions.CmdTraceRaysKHR = PFN_vkCmdTraceRaysKHR(functions.GetDeviceProcAddr(vk_device, "vkCmdTraceRaysKHR"));
 		}
+
+		// VK_EXT_mesh_shader (GPU-driven rendering, fork; a required extension).
+		device_functions.CmdDrawMeshTasksEXT = PFN_vkCmdDrawMeshTasksEXT(functions.GetDeviceProcAddr(vk_device, "vkCmdDrawMeshTasksEXT"));
+		device_functions.CmdDrawMeshTasksIndirectEXT = PFN_vkCmdDrawMeshTasksIndirectEXT(functions.GetDeviceProcAddr(vk_device, "vkCmdDrawMeshTasksIndirectEXT"));
+		device_functions.CmdDrawMeshTasksIndirectCountEXT = PFN_vkCmdDrawMeshTasksIndirectCountEXT(functions.GetDeviceProcAddr(vk_device, "vkCmdDrawMeshTasksIndirectCountEXT"));
 	}
+	ERR_FAIL_COND_V_MSG(device_functions.CmdDrawMeshTasksIndirectCountEXT == nullptr, ERR_CANT_CREATE, "Couldn't load the VK_EXT_mesh_shader draw entry points.");
 
 	return OK;
 }
@@ -2973,6 +3007,8 @@ static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELI
 static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR));
 static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_FRAGMENT_DENSITY_PROCESS_BIT, VK_PIPELINE_STAGE_FRAGMENT_DENSITY_PROCESS_BIT_EXT));
 static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_RAY_TRACING_SHADER_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR));
+static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_TASK_SHADER_BIT, VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT));
+static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_MESH_SHADER_BIT, VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT));
 static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR));
 
 // RDD::BarrierAccessBits == VkAccessFlagBits.
@@ -4339,6 +4375,8 @@ static VkShaderStageFlagBits RD_STAGE_TO_VK_SHADER_STAGE_BITS[RDD::SHADER_STAGE_
 	VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
 	VK_SHADER_STAGE_MISS_BIT_KHR,
 	VK_SHADER_STAGE_INTERSECTION_BIT_KHR,
+	VK_SHADER_STAGE_TASK_BIT_EXT,
+	VK_SHADER_STAGE_MESH_BIT_EXT,
 };
 
 RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Ref<RenderingShaderContainer> &p_shader_container, const Vector<ImmutableSampler> &p_immutable_samplers) {
@@ -6061,6 +6099,24 @@ void RenderingDeviceDriverVulkan::command_render_draw_indirect_count(CommandBuff
 	vkCmdDrawIndirectCount(command_buffer->vk_command_buffer, indirect_buf_info->vk_buffer, p_offset, count_buf_info->vk_buffer, p_count_buffer_offset, p_max_draw_count, p_stride);
 }
 
+void RenderingDeviceDriverVulkan::command_render_draw_mesh_tasks(CommandBufferID p_cmd_buffer, uint32_t p_group_count_x, uint32_t p_group_count_y, uint32_t p_group_count_z) {
+	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
+	device_functions.CmdDrawMeshTasksEXT(command_buffer->vk_command_buffer, p_group_count_x, p_group_count_y, p_group_count_z);
+}
+
+void RenderingDeviceDriverVulkan::command_render_draw_mesh_tasks_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) {
+	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
+	const BufferInfo *buf_info = (const BufferInfo *)p_indirect_buffer.id;
+	device_functions.CmdDrawMeshTasksIndirectEXT(command_buffer->vk_command_buffer, buf_info->vk_buffer, p_offset, p_draw_count, p_stride);
+}
+
+void RenderingDeviceDriverVulkan::command_render_draw_mesh_tasks_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
+	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
+	const BufferInfo *indirect_buf_info = (const BufferInfo *)p_indirect_buffer.id;
+	const BufferInfo *count_buf_info = (const BufferInfo *)p_count_buffer.id;
+	device_functions.CmdDrawMeshTasksIndirectCountEXT(command_buffer->vk_command_buffer, indirect_buf_info->vk_buffer, p_offset, count_buf_info->vk_buffer, p_count_buffer_offset, p_max_draw_count, p_stride);
+}
+
 void RenderingDeviceDriverVulkan::command_render_bind_vertex_buffers(CommandBufferID p_cmd_buffer, uint32_t p_binding_count, const BufferID *p_buffers, const uint64_t *p_offsets, uint64_t p_dynamic_offsets) {
 	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
 	VkBuffer *vk_buffers = ALLOCA_ARRAY(VkBuffer, p_binding_count);
@@ -6504,9 +6560,17 @@ RDD::PipelineID RenderingDeviceDriverVulkan::render_pipeline_create(
 
 	const RenderPassInfo *render_pass = (const RenderPassInfo *)(p_render_pass.id);
 	pipeline_create_info.pStages = vk_pipeline_stages;
-	pipeline_create_info.pVertexInputState = vertex_input_state_create_info;
-	pipeline_create_info.pInputAssemblyState = &input_assembly_create_info;
-	pipeline_create_info.pTessellationState = &tessellation_create_info;
+	// A mesh pipeline (VK_EXT_mesh_shader) has no vertex input, input assembly or tessellation:
+	// the spec ignores them, and the validation layer wants them absent.
+	bool has_mesh_stage = false;
+	for (uint32_t i = 0; i < shader_info->vk_stages_create_info.size(); i++) {
+		if (shader_info->vk_stages_create_info[i].stage == VK_SHADER_STAGE_MESH_BIT_EXT) {
+			has_mesh_stage = true;
+		}
+	}
+	pipeline_create_info.pVertexInputState = has_mesh_stage ? nullptr : vertex_input_state_create_info;
+	pipeline_create_info.pInputAssemblyState = has_mesh_stage ? nullptr : &input_assembly_create_info;
+	pipeline_create_info.pTessellationState = has_mesh_stage ? nullptr : &tessellation_create_info;
 	pipeline_create_info.pViewportState = &viewport_state_create_info;
 	pipeline_create_info.pRasterizationState = &rasterization_state_create_info;
 	pipeline_create_info.pMultisampleState = &multisample_state_create_info;

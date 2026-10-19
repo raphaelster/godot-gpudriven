@@ -21,6 +21,13 @@ refuses anything less at device creation):
   refused.
 - **`draw_list_draw_indirect_count(list, use_indices, buffer, offset, count_buffer, count_offset,
   max_draw_count, stride)`**: the draw count is a uint32 read from a second buffer on the GPU.
+- **Task and mesh shaders (VK_EXT_mesh_shader, REQUIRED at device creation).** `SHADER_STAGE_TASK`
+  and `SHADER_STAGE_MESH` (`RDShaderSource.source_task`/`source_mesh`), a render pipeline whose
+  pre-raster stage is a mesh shader (no vertex format; vertex input and input assembly are left
+  out of the Vulkan pipeline), and `draw_list_draw_mesh_tasks(list, x, y, z)`,
+  `draw_list_draw_mesh_tasks_indirect(list, buffer, offset, draw_count, stride)` and
+  `draw_list_draw_mesh_tasks_indirect_count(list, buffer, offset, count_buffer, count_offset,
+  max_draw_count, stride)` over 12-byte `VkDrawMeshTasksIndirectCommandEXT` records.
 
 `rd_probe.gd` exercises all of it against the validation layer and reads pixels back — two
 unbounded bindings in one set, a texture2DArray slot, a storage image written by compute and

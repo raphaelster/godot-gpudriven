@@ -996,6 +996,21 @@ void RenderingDeviceGraph::_run_draw_list_command(RDD::CommandBufferID p_command
 				driver->command_render_draw_indexed_indirect_count(p_command_buffer, inst->buffer, inst->offset, inst->count_buffer, inst->count_offset, inst->max_draw_count, inst->stride);
 				instruction_data_cursor += sizeof(DrawListDrawIndexedIndirectCountInstruction);
 			} break;
+			case DrawListInstruction::TYPE_DRAW_MESH_TASKS: {
+				const DrawListDrawMeshTasksInstruction *inst = reinterpret_cast<const DrawListDrawMeshTasksInstruction *>(instruction);
+				driver->command_render_draw_mesh_tasks(p_command_buffer, inst->group_count_x, inst->group_count_y, inst->group_count_z);
+				instruction_data_cursor += sizeof(DrawListDrawMeshTasksInstruction);
+			} break;
+			case DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT: {
+				const DrawListDrawMeshTasksIndirectInstruction *inst = reinterpret_cast<const DrawListDrawMeshTasksIndirectInstruction *>(instruction);
+				driver->command_render_draw_mesh_tasks_indirect(p_command_buffer, inst->buffer, inst->offset, inst->draw_count, inst->stride);
+				instruction_data_cursor += sizeof(DrawListDrawMeshTasksIndirectInstruction);
+			} break;
+			case DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT_COUNT: {
+				const DrawListDrawMeshTasksIndirectCountInstruction *inst = reinterpret_cast<const DrawListDrawMeshTasksIndirectCountInstruction *>(instruction);
+				driver->command_render_draw_mesh_tasks_indirect_count(p_command_buffer, inst->buffer, inst->offset, inst->count_buffer, inst->count_offset, inst->max_draw_count, inst->stride);
+				instruction_data_cursor += sizeof(DrawListDrawMeshTasksIndirectCountInstruction);
+			} break;
 			case DrawListInstruction::TYPE_EXECUTE_COMMANDS: {
 				const DrawListExecuteCommandsInstruction *execute_commands_instruction = reinterpret_cast<const DrawListExecuteCommandsInstruction *>(instruction);
 				driver->command_buffer_execute_secondary(p_command_buffer, execute_commands_instruction->command_buffer);
@@ -1598,6 +1613,21 @@ void RenderingDeviceGraph::_print_draw_list(const uint8_t *p_instruction_data, u
 				const DrawListDrawIndexedIndirectCountInstruction *inst = reinterpret_cast<const DrawListDrawIndexedIndirectCountInstruction *>(instruction);
 				print_line("\tDRAW INDEXED INDIRECT COUNT BUFFER ID", itos(inst->buffer.id), "OFFSET", inst->offset, "COUNT BUFFER ID", itos(inst->count_buffer.id), "COUNT OFFSET", inst->count_offset, "MAX DRAW COUNT", inst->max_draw_count, "STRIDE", inst->stride);
 				instruction_data_cursor += sizeof(DrawListDrawIndexedIndirectCountInstruction);
+			} break;
+			case DrawListInstruction::TYPE_DRAW_MESH_TASKS: {
+				const DrawListDrawMeshTasksInstruction *inst = reinterpret_cast<const DrawListDrawMeshTasksInstruction *>(instruction);
+				print_line("\tDRAW MESH TASKS GROUPS", inst->group_count_x, inst->group_count_y, inst->group_count_z);
+				instruction_data_cursor += sizeof(DrawListDrawMeshTasksInstruction);
+			} break;
+			case DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT: {
+				const DrawListDrawMeshTasksIndirectInstruction *inst = reinterpret_cast<const DrawListDrawMeshTasksIndirectInstruction *>(instruction);
+				print_line("\tDRAW MESH TASKS INDIRECT BUFFER ID", itos(inst->buffer.id), "OFFSET", inst->offset, "DRAW COUNT", inst->draw_count, "STRIDE", inst->stride);
+				instruction_data_cursor += sizeof(DrawListDrawMeshTasksIndirectInstruction);
+			} break;
+			case DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT_COUNT: {
+				const DrawListDrawMeshTasksIndirectCountInstruction *inst = reinterpret_cast<const DrawListDrawMeshTasksIndirectCountInstruction *>(instruction);
+				print_line("\tDRAW MESH TASKS INDIRECT COUNT BUFFER ID", itos(inst->buffer.id), "OFFSET", inst->offset, "COUNT BUFFER ID", itos(inst->count_buffer.id), "COUNT OFFSET", inst->count_offset, "MAX DRAW COUNT", inst->max_draw_count, "STRIDE", inst->stride);
+				instruction_data_cursor += sizeof(DrawListDrawMeshTasksIndirectCountInstruction);
 			} break;
 			case DrawListInstruction::TYPE_EXECUTE_COMMANDS: {
 				print_line("\tEXECUTE COMMANDS");
@@ -2284,6 +2314,36 @@ void RenderingDeviceGraph::add_draw_list_draw_indirect_count(RDD::BufferID p_buf
 void RenderingDeviceGraph::add_draw_list_draw_indexed_indirect_count(RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
 	DrawListDrawIndexedIndirectCountInstruction *instruction = reinterpret_cast<DrawListDrawIndexedIndirectCountInstruction *>(_allocate_draw_list_instruction(sizeof(DrawListDrawIndexedIndirectCountInstruction)));
 	instruction->type = DrawListInstruction::TYPE_DRAW_INDEXED_INDIRECT_COUNT;
+	instruction->buffer = p_buffer;
+	instruction->offset = p_offset;
+	instruction->count_buffer = p_count_buffer;
+	instruction->count_offset = p_count_offset;
+	instruction->max_draw_count = p_max_draw_count;
+	instruction->stride = p_stride;
+	draw_instruction_list.stages.set_flag(RDD::PIPELINE_STAGE_DRAW_INDIRECT_BIT);
+}
+
+void RenderingDeviceGraph::add_draw_list_draw_mesh_tasks(uint32_t p_group_count_x, uint32_t p_group_count_y, uint32_t p_group_count_z) {
+	DrawListDrawMeshTasksInstruction *instruction = reinterpret_cast<DrawListDrawMeshTasksInstruction *>(_allocate_draw_list_instruction(sizeof(DrawListDrawMeshTasksInstruction)));
+	instruction->type = DrawListInstruction::TYPE_DRAW_MESH_TASKS;
+	instruction->group_count_x = p_group_count_x;
+	instruction->group_count_y = p_group_count_y;
+	instruction->group_count_z = p_group_count_z;
+}
+
+void RenderingDeviceGraph::add_draw_list_draw_mesh_tasks_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride) {
+	DrawListDrawMeshTasksIndirectInstruction *instruction = reinterpret_cast<DrawListDrawMeshTasksIndirectInstruction *>(_allocate_draw_list_instruction(sizeof(DrawListDrawMeshTasksIndirectInstruction)));
+	instruction->type = DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT;
+	instruction->buffer = p_buffer;
+	instruction->offset = p_offset;
+	instruction->draw_count = p_draw_count;
+	instruction->stride = p_stride;
+	draw_instruction_list.stages.set_flag(RDD::PIPELINE_STAGE_DRAW_INDIRECT_BIT);
+}
+
+void RenderingDeviceGraph::add_draw_list_draw_mesh_tasks_indirect_count(RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
+	DrawListDrawMeshTasksIndirectCountInstruction *instruction = reinterpret_cast<DrawListDrawMeshTasksIndirectCountInstruction *>(_allocate_draw_list_instruction(sizeof(DrawListDrawMeshTasksIndirectCountInstruction)));
+	instruction->type = DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT_COUNT;
 	instruction->buffer = p_buffer;
 	instruction->offset = p_offset;
 	instruction->count_buffer = p_count_buffer;

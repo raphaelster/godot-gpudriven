@@ -280,6 +280,8 @@ ShaderFileEditor::ShaderFileEditor() {
 		"ClosestHit",
 		"Miss",
 		"Intersection",
+		"Task",
+		"Mesh",
 	};
 
 	stage_hb = memnew(HFlowContainer);

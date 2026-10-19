@@ -6,7 +6,10 @@ extends SceneTree
 ##    through a texture2D[] slot (a TRACKED slot texture: the graph owes the layout transition);
 ##  - draw_list_draw_indirect_count with the count read from a buffer, raised on the GPU side;
 ##  - the immutability rule for an untracked slot texture, and freeing a slotted texture (the set
-##    survives, its slots are emptied with a warning).
+##    survives, its slots are emptied with a warning);
+##  - a task + mesh pipeline (VK_EXT_mesh_shader, no vertex format) drawn with
+##    draw_list_draw_mesh_tasks_indirect_count: gl_DrawID in the task stage, a task payload, two
+##    mesh workgroups per task, per-vertex flat outputs.
 ## Windowed only (RD needs a device): run under xvfb with --gpu-validation.
 
 const W := 64
@@ -263,6 +266,8 @@ void main() {
 	data = draw.call()
 	check(same(pixel(data, 4, H / 2), Color.RED) and same(pixel(data, 5 * 8 + 4, H / 2), Color.GREEN), "the surviving set still draws its other slots")
 
+	mesh_section()
+
 	rd.free_rid(uset)
 	rd.free_rid(cset)
 	for t in [red, green, blue, white, yellow, arr]:
@@ -279,3 +284,106 @@ void main() {
 
 	print("RD PROBE ", "PASS" if failures == 0 else "FAIL (%d)" % failures)
 	quit(0 if failures == 0 else 1)
+
+
+# --- task -> mesh: two indirect records, each a task workgroup that launches two mesh workgroups,
+#     each mesh workgroup a quad in its own column; the count buffer stops the second record first
+func mesh_section() -> void:
+	var src := RDShaderSource.new()
+	src.source_task = """#version 460
+#extension GL_EXT_mesh_shader : require
+layout(local_size_x = 1) in;
+struct Payload { uint column; };
+taskPayloadSharedEXT Payload payload;
+void main() {
+	payload.column = uint(gl_DrawID) * 2u;
+	EmitMeshTasksEXT(2, 1, 1);
+}
+"""
+	src.source_mesh = """#version 460
+#extension GL_EXT_mesh_shader : require
+layout(local_size_x = 4) in;
+layout(triangles, max_vertices = 4, max_primitives = 2) out;
+struct Payload { uint column; };
+taskPayloadSharedEXT Payload payload;
+layout(location = 0) out flat uint v_column[];
+void main() {
+	uint column = payload.column + gl_WorkGroupID.x;
+	SetMeshOutputsEXT(4, 2);
+	uint i = gl_LocalInvocationIndex;
+	vec2 c = vec2(float(i & 1u), float(i >> 1));
+	float x0 = -1.0 + float(column) * 0.25;
+	gl_MeshVerticesEXT[i].gl_Position = vec4(x0 + c.x * 0.25, -1.0 + c.y * 2.0, 0.0, 1.0);
+	v_column[i] = column;
+	if (i < 2u) {
+		gl_PrimitiveTriangleIndicesEXT[i] = i == 0u ? uvec3(0, 1, 3) : uvec3(0, 3, 2);
+	}
+}
+"""
+	src.source_fragment = """#version 460
+layout(location = 0) in flat uint v_column;
+layout(location = 0) out vec4 o_color;
+void main() {
+	const vec4 palette[4] = vec4[](vec4(1, 0, 0, 1), vec4(0, 1, 0, 1), vec4(0, 0, 1, 1), vec4(1, 1, 1, 1));
+	o_color = palette[v_column & 3u];
+}
+"""
+	var spirv := rd.shader_compile_spirv_from_source(src)
+	check(spirv.compile_error_task == "" and spirv.compile_error_mesh == "" and spirv.compile_error_fragment == "", "task + mesh + fragment shader compiles")
+	if spirv.compile_error_task != "" or spirv.compile_error_mesh != "" or spirv.compile_error_fragment != "":
+		print(spirv.compile_error_task, spirv.compile_error_mesh, spirv.compile_error_fragment)
+		failures += 1
+		return
+	var shader := rd.shader_create_from_spirv(spirv)
+	check(shader.is_valid(), "task/mesh shader is accepted")
+
+	var rt_fmt := RDTextureFormat.new()
+	rt_fmt.width = W
+	rt_fmt.height = H
+	rt_fmt.format = RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM
+	rt_fmt.usage_bits = RenderingDevice.TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT
+	var rt := rd.texture_create(rt_fmt, RDTextureView.new())
+	var fb := rd.framebuffer_create([rt])
+	var blend := RDPipelineColorBlendState.new()
+	blend.attachments = [RDPipelineColorBlendStateAttachment.new()]
+	var pipeline := rd.render_pipeline_create(shader, rd.framebuffer_get_format(fb), -1, RenderingDevice.RENDER_PRIMITIVE_TRIANGLES, RDPipelineRasterizationState.new(), RDPipelineMultisampleState.new(), RDPipelineDepthStencilState.new(), blend)
+	check(pipeline.is_valid(), "mesh pipeline is created with no vertex format")
+
+	var records := PackedInt32Array([1, 1, 1, 1, 1, 1]).to_byte_array() # two VkDrawMeshTasksIndirectCommandEXT
+	var indirect := rd.storage_buffer_create(records.size(), records, RenderingDevice.STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT)
+	var count_bytes := PackedInt32Array([1]).to_byte_array()
+	var count_buffer := rd.storage_buffer_create(count_bytes.size(), count_bytes, RenderingDevice.STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT)
+	var draw := func() -> PackedByteArray:
+		var dl := rd.draw_list_begin(fb, RenderingDevice.DRAW_CLEAR_ALL, [Color.BLACK])
+		rd.draw_list_bind_render_pipeline(dl, pipeline)
+		rd.draw_list_draw_mesh_tasks_indirect_count(dl, indirect, 0, count_buffer, 0, 2, 12)
+		rd.draw_list_end()
+		return rd.texture_get_data(rt, 0)
+
+	var data: PackedByteArray = draw.call()
+	var expect := [Color.RED, Color.GREEN, Color.BLACK, Color.BLACK]
+	for i in 4:
+		var c := pixel(data, i * 8 + 4, H / 2)
+		check(same(c, expect[i]), "mesh column %d (count 1) is %s, got %s" % [i, expect[i], c])
+	rd.buffer_update(count_buffer, 0, 4, PackedInt32Array([2]).to_byte_array())
+	data = draw.call()
+	expect = [Color.RED, Color.GREEN, Color.BLUE, Color.WHITE]
+	for i in 4:
+		var c := pixel(data, i * 8 + 4, H / 2)
+		check(same(c, expect[i]), "mesh column %d (count 2: gl_DrawID reached the task stage) is %s, got %s" % [i, expect[i], c])
+	check(same(pixel(data, 4 * 8 + 4, H / 2), Color.BLACK), "mesh column 4 is not drawn")
+
+	# the direct form: one task workgroup, gl_DrawID 0
+	var dl2 := rd.draw_list_begin(fb, RenderingDevice.DRAW_CLEAR_ALL, [Color.BLACK])
+	rd.draw_list_bind_render_pipeline(dl2, pipeline)
+	rd.draw_list_draw_mesh_tasks(dl2, 1, 1, 1)
+	rd.draw_list_end()
+	data = rd.texture_get_data(rt, 0)
+	check(same(pixel(data, 4, H / 2), Color.RED) and same(pixel(data, 12, H / 2), Color.GREEN) and same(pixel(data, 20, H / 2), Color.BLACK), "draw_list_draw_mesh_tasks draws one task's two quads")
+
+	rd.free_rid(pipeline)
+	rd.free_rid(fb)
+	rd.free_rid(rt)
+	rd.free_rid(indirect)
+	rd.free_rid(count_buffer)
+	rd.free_rid(shader)
