@@ -306,6 +306,7 @@ public:
 		CALLBACK_RESOURCE_USAGE_GENERAL,
 		CALLBACK_RESOURCE_USAGE_ACCELERATION_STRUCTURE_READ,
 		CALLBACK_RESOURCE_USAGE_ACCELERATION_STRUCTURE_READ_WRITE,
+		CALLBACK_RESOURCE_USAGE_INDIRECT_STORAGE_BUFFER_READ, // fork: mirrors RDG's
 		CALLBACK_RESOURCE_USAGE_MAX
 	};
 
@@ -1595,6 +1596,9 @@ public:
 		BUFFER_ACCESS_READ,
 		BUFFER_ACCESS_READ_WRITE,
 		BUFFER_ACCESS_INDIRECT,
+		// Indirect commands AND a shader read of the same buffer in one list (a culled entity array
+		// whose rows are both the draw records and what the vertex stage reads by address).
+		BUFFER_ACCESS_INDIRECT_READ,
 	};
 	void draw_list_use_buffer(DrawListID p_list, RID p_buffer, BufferAccess p_access);
 
@@ -1921,7 +1925,9 @@ protected:
 
 public:
 	void _free_internal(RID p_id);
-	void _begin_frame(bool p_presented = false);
+	// Fork: `p_resolve_timestamps` false when the frame is CONTINUED rather than begun (a flush and
+	// stall mid-frame): its captured timestamps stay pending and resolve at its real next begin.
+	void _begin_frame(bool p_presented = false, bool p_resolve_timestamps = true);
 	void _end_frame();
 	void _execute_frame(bool p_present);
 	void _stall_for_frame(uint32_t p_frame);

@@ -6590,6 +6590,9 @@ void RenderingDevice::draw_list_use_buffer(DrawListID p_list, RID p_buffer, Buff
 		case BUFFER_ACCESS_INDIRECT:
 			ERR_FAIL_COND_MSG(!buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Buffer provided was not created to do indirect draws (STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT).");
 			usage = RDG::RESOURCE_USAGE_INDIRECT_BUFFER_READ;
+			break;		case BUFFER_ACCESS_INDIRECT_READ:
+			ERR_FAIL_COND_MSG(!buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Buffer provided was not created to do indirect draws (STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT).");
+			usage = RDG::RESOURCE_USAGE_INDIRECT_STORAGE_BUFFER_READ;
 			break;
 	}
 
@@ -7427,6 +7430,9 @@ void RenderingDevice::compute_list_use_buffer(ComputeListID p_list, RID p_buffer
 		case BUFFER_ACCESS_INDIRECT:
 			ERR_FAIL_COND_MSG(!buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Buffer provided was not created to do indirect dispatch (STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT).");
 			usage = RDG::RESOURCE_USAGE_INDIRECT_BUFFER_READ;
+			break;		case BUFFER_ACCESS_INDIRECT_READ:
+			ERR_FAIL_COND_MSG(!buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Buffer provided was not created to do indirect dispatch (STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT).");
+			usage = RDG::RESOURCE_USAGE_INDIRECT_STORAGE_BUFFER_READ;
 			break;
 	}
 
@@ -8430,7 +8436,7 @@ uint64_t RenderingDevice::get_memory_usage(MemoryType p_type) const {
 	}
 }
 
-void RenderingDevice::_begin_frame(bool p_presented) {
+void RenderingDevice::_begin_frame(bool p_presented, bool p_resolve_timestamps) {
 	GodotProfileZoneGroupedFirst(_profile_zone, "_stall_for_frame");
 	// Before writing to this frame, wait for it to be finished.
 	_stall_for_frame(frame);
@@ -8470,6 +8476,14 @@ void RenderingDevice::_begin_frame(bool p_presented) {
 	if (download_staging_buffers.used) {
 		download_staging_buffers.current = (download_staging_buffers.current + 1) % download_staging_buffers.blocks.size();
 		download_staging_buffers.used = false;
+	}
+
+	// Fork: a frame continued by a flush and stall keeps its timestamps pending. Resolving them here
+	// zeroed the count, so the frame's real begin found nothing and every timestamp read as absent —
+	// every frame wherever the swap chain cannot be acquired (screen_prepare_for_drawing flushes on
+	// each failed acquisition: a virtual display, a minimised window).
+	if (!p_resolve_timestamps) {
+		return;
 	}
 
 	if (frames[frame].timestamp_count) {
@@ -8696,7 +8710,7 @@ void RenderingDevice::_flush_and_stall_for_all_frames(bool p_begin_frame) {
 	_execute_frame(false);
 
 	if (p_begin_frame) {
-		_begin_frame();
+		_begin_frame(false, false);
 	} else {
 		_stall_for_frame(frame);
 	}
@@ -9981,6 +9995,7 @@ void RenderingDevice::_bind_methods() {
 	BIND_ENUM_CONSTANT(BUFFER_ACCESS_READ);
 	BIND_ENUM_CONSTANT(BUFFER_ACCESS_READ_WRITE);
 	BIND_ENUM_CONSTANT(BUFFER_ACCESS_INDIRECT);
+	BIND_ENUM_CONSTANT(BUFFER_ACCESS_INDIRECT_READ);
 
 	BIND_BITFIELD_FLAG(BUFFER_CREATION_DEVICE_ADDRESS_BIT);
 	BIND_BITFIELD_FLAG(BUFFER_CREATION_AS_STORAGE_BIT);
@@ -10669,4 +10684,5 @@ static_assert(ENUM_MEMBERS_EQUAL(RD::CALLBACK_RESOURCE_USAGE_STORAGE_IMAGE_READ_
 static_assert(ENUM_MEMBERS_EQUAL(RD::CALLBACK_RESOURCE_USAGE_ATTACHMENT_COLOR_READ_WRITE, RDG::RESOURCE_USAGE_ATTACHMENT_COLOR_READ_WRITE));
 static_assert(ENUM_MEMBERS_EQUAL(RD::CALLBACK_RESOURCE_USAGE_ATTACHMENT_DEPTH_STENCIL_READ_WRITE, RDG::RESOURCE_USAGE_ATTACHMENT_DEPTH_STENCIL_READ_WRITE));
 static_assert(ENUM_MEMBERS_EQUAL(RD::CALLBACK_RESOURCE_USAGE_GENERAL, RDG::RESOURCE_USAGE_GENERAL));
+static_assert(ENUM_MEMBERS_EQUAL(RD::CALLBACK_RESOURCE_USAGE_INDIRECT_STORAGE_BUFFER_READ, RDG::RESOURCE_USAGE_INDIRECT_STORAGE_BUFFER_READ));
 static_assert(ENUM_MEMBERS_EQUAL(RD::CALLBACK_RESOURCE_USAGE_MAX, RDG::RESOURCE_USAGE_MAX));

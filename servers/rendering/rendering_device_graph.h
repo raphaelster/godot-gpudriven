@@ -178,6 +178,9 @@ public:
 		RESOURCE_USAGE_GENERAL,
 		RESOURCE_USAGE_ACCELERATION_STRUCTURE_READ,
 		RESOURCE_USAGE_ACCELERATION_STRUCTURE_READ_WRITE,
+		// GPU-driven rendering (fork): a buffer a list reads BOTH as indirect commands and through a
+		// device address (RenderingDevice::BUFFER_ACCESS_INDIRECT_READ).
+		RESOURCE_USAGE_INDIRECT_STORAGE_BUFFER_READ,
 		RESOURCE_USAGE_MAX
 	};
 
