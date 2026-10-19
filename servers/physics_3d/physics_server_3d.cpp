@@ -695,6 +695,15 @@ RID PhysicsServer3D::shape_create(ShapeType p_shape) {
 	}
 }
 
+RID PhysicsServer3D::concave_polygon_shape_create_built(const PackedVector3Array &p_faces, bool p_backface_collision) {
+	const RID shape = concave_polygon_shape_create();
+	Dictionary data;
+	data["faces"] = p_faces;
+	data["backface_collision"] = p_backface_collision;
+	shape_set_data(shape, data);
+	return shape;
+}
+
 void PhysicsServer3D::_bind_methods() {
 #ifndef _3D_DISABLED
 
@@ -708,6 +717,7 @@ void PhysicsServer3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("concave_polygon_shape_create"), &PhysicsServer3D::concave_polygon_shape_create);
 	ClassDB::bind_method(D_METHOD("heightmap_shape_create"), &PhysicsServer3D::heightmap_shape_create);
 	ClassDB::bind_method(D_METHOD("custom_shape_create"), &PhysicsServer3D::custom_shape_create);
+	ClassDB::bind_method(D_METHOD("concave_polygon_shape_create_built", "faces", "backface_collision"), &PhysicsServer3D::concave_polygon_shape_create_built, DEFVAL(false));
 
 	ClassDB::bind_method(D_METHOD("shape_set_data", "shape", "data"), &PhysicsServer3D::shape_set_data);
 	ClassDB::bind_method(D_METHOD("shape_set_margin", "shape", "margin"), &PhysicsServer3D::shape_set_margin);

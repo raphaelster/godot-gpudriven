@@ -273,6 +273,11 @@ public:
 	virtual RID heightmap_shape_create() = 0;
 	virtual RID custom_shape_create() = 0;
 
+	// A concave polygon shape whose collision data is already BUILT when this returns, on the calling thread.
+	// The default is `concave_polygon_shape_create()` + `shape_set_data()`, which builds nothing ahead of use and
+	// is only as thread-safe as those two calls: a server that does not override this is main-thread-only here.
+	virtual RID concave_polygon_shape_create_built(const PackedVector3Array &p_faces, bool p_backface_collision);
+
 	virtual void shape_set_data(RID p_shape, const Variant &p_data) = 0;
 	virtual void shape_set_custom_solver_bias(RID p_shape, real_t p_bias) = 0;
 

@@ -716,6 +716,14 @@
 				Creates a 3D concave polygon shape in the physics server, and returns the [RID] that identifies it. Use [method shape_set_data] to set the concave polygon's triangles.
 			</description>
 		</method>
+		<method name="concave_polygon_shape_create_built">
+			<return type="RID" />
+			<param index="0" name="faces" type="PackedVector3Array" />
+			<param index="1" name="backface_collision" type="bool" default="false" />
+			<description>
+				Creates a 3D concave polygon shape from [param faces] (as for [method shape_set_data]) and returns the [RID] that identifies it. A physics server that overrides this (Jolt Physics does) builds the shape's collision data on the calling thread before returning, so it may be called from any thread and the shape is ready to use without a build on first use. Otherwise it is [method concave_polygon_shape_create] followed by [method shape_set_data], and should be called from the main thread.
+			</description>
+		</method>
 		<method name="cone_twist_joint_get_param" qualifiers="const">
 			<return type="float" />
 			<param index="0" name="joint" type="RID" />

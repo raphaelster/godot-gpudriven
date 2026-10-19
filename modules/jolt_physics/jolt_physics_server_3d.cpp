@@ -131,6 +131,22 @@ RID JoltPhysicsServer3D::custom_shape_create() {
 	ERR_FAIL_V_MSG(RID(), "Custom shapes are not supported.");
 }
 
+RID JoltPhysicsServer3D::concave_polygon_shape_create_built(const PackedVector3Array &p_faces, bool p_backface_collision) {
+	// Safe on any thread: the shape has no owners and no RID until it is built, so nothing else can reach it, and
+	// `try_build` caches the Jolt shape that a body's `try_build` will later return as-is.
+	JoltShape3D *shape = memnew(JoltConcavePolygonShape3D);
+
+	Dictionary data;
+	data["faces"] = p_faces;
+	data["backface_collision"] = p_backface_collision;
+	shape->set_data(data);
+	shape->try_build();
+
+	RID rid = shape_owner.make_rid(shape);
+	shape->set_rid(rid);
+	return rid;
+}
+
 void JoltPhysicsServer3D::shape_set_data(RID p_shape, const Variant &p_data) {
 	JoltShape3D *shape = shape_owner.get_or_null(p_shape);
 	ERR_FAIL_NULL(shape);

@@ -92,6 +92,13 @@ public:
 	FUNCRID(heightmap_shape)
 	FUNCRID(custom_shape)
 
+	// Not queued, exactly like the FUNCRID creators above: it makes a NEW shape that no other thread can see until
+	// its RID is returned, and the RID owner is thread-safe, so it touches nothing the command queue serializes.
+	// Queuing it would build the shape on the server's thread, which is the cost a caller on a worker wants to avoid.
+	virtual RID concave_polygon_shape_create_built(const PackedVector3Array &p_faces, bool p_backface_collision) override {
+		return physics_server_3d->concave_polygon_shape_create_built(p_faces, p_backface_collision);
+	}
+
 	FUNC2(shape_set_data, RID, const Variant &);
 	FUNC2(shape_set_custom_solver_bias, RID, real_t);
 
