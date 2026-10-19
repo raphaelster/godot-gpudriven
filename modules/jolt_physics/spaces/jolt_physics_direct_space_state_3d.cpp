@@ -53,6 +53,7 @@
 #include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
+#include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 
 bool JoltPhysicsDirectSpaceState3D::_cast_motion_impl(const JPH::Shape &p_jolt_shape, const Transform3D &p_transform_com, const Vector3 &p_scale, const Vector3 &p_motion, bool p_use_edge_removal, bool p_ignore_overlaps, const JPH::CollideShapeSettings &p_settings, const JPH::BroadPhaseLayerFilter &p_broad_phase_layer_filter, const JPH::ObjectLayerFilter &p_object_layer_filter, const JPH::BodyFilter &p_body_filter, const JPH::ShapeFilter &p_shape_filter, real_t &r_closest_safe, real_t &r_closest_unsafe) const {
@@ -767,6 +768,73 @@ bool JoltPhysicsDirectSpaceState3D::rest_info(const ShapeParameters &p_parameter
 	r_info->linear_velocity = object->get_velocity_at_position(hit_point);
 
 	return true;
+}
+
+int JoltPhysicsDirectSpaceState3D::intersect_sphere_triangles(const Vector3 &p_center, real_t p_radius, uint32_t p_collision_mask, bool p_hit_back_faces, TriangleResult *r_results, int p_result_max) {
+	ERR_FAIL_COND_V_MSG(space->is_stepping(), 0, "intersect_sphere_triangles must not be called while the physics space is being stepped.");
+	ERR_FAIL_COND_V(p_radius <= 0.0, 0);
+
+	if (p_result_max <= 0) {
+		return 0;
+	}
+
+	space->flush_pending_objects();
+
+	const JPH::RefConst<JPH::Shape> sphere = new JPH::SphereShape((float)p_radius);
+
+	// The faces, with no early out and no edge rewriting: one result per overlapped triangle, its
+	// face collected. Plain `CollideShape` rather than `_collide_shape_queries`, whose enhanced
+	// internal-edge removal (a project setting) may merge or drop results.
+	JPH::CollideShapeSettings settings;
+	settings.mCollectFacesMode = JPH::ECollectFacesMode::CollectFaces;
+	settings.mActiveEdgeMode = JPH::EActiveEdgeMode::CollideWithAll;
+	settings.mBackFaceMode = p_hit_back_faces ? JPH::EBackFaceMode::CollideWithBackFaces : JPH::EBackFaceMode::IgnoreBackFaces;
+
+	const JPH::RVec3 base_offset = to_jolt_r(p_center);
+	const JoltQueryFilter3D query_filter(*this, p_collision_mask, true, false, HashSet<RID>());
+	JoltQueryCollectorAnyMulti<JPH::CollideShapeCollector, 32> collector(p_result_max);
+	space->get_narrow_phase_query().CollideShape(sphere, JPH::Vec3::sOne(), JPH::RMat44::sTranslation(base_offset), settings, base_offset, collector, query_filter, query_filter, query_filter);
+
+	int count = 0;
+	for (int i = 0; i < collector.get_hit_count() && count < p_result_max; ++i) {
+		const JPH::CollideShapeResult &hit = collector.get_hit(i);
+		if (hit.mShape2Face.size() != 3) {
+			continue;
+		}
+
+		const JoltObject3D *object = space->try_get_object(hit.mBodyID2);
+		if (object == nullptr) {
+			continue;
+		}
+		const JoltShapedObject3D *shaped_object = object->as_shaped();
+		const JPH::Body *body = object->get_jolt_body();
+		if (shaped_object == nullptr || body == nullptr) {
+			continue;
+		}
+
+		JPH::SubShapeID remainder;
+		const JPH::Shape *leaf = body->GetShape()->GetLeafShape(hit.mSubShapeID2, remainder);
+		if (leaf == nullptr || leaf->GetType() != JPH::EShapeType::Mesh) {
+			continue;
+		}
+
+		const JPH::RVec3 point = base_offset + hit.mContactPointOn2;
+
+		TriangleResult &result = r_results[count++];
+		result.a = to_godot(base_offset + hit.mShape2Face[0]);
+		result.b = to_godot(base_offset + hit.mShape2Face[1]);
+		result.c = to_godot(base_offset + hit.mShape2Face[2]);
+		// The triangle's own FRONT normal, whatever side the sphere is on and whatever winding the
+		// module built the mesh in (it reverses Godot's): the same call `intersect_ray` answers with.
+		result.normal = to_godot(body->GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, point));
+		result.point = to_godot(point);
+		result.rid = object->get_rid();
+		result.collider_id = object->get_instance_id();
+		result.shape = MAX(shaped_object->find_shape_index(hit.mSubShapeID2), 0);
+		result.face_index = _try_get_face_index(*body, hit.mSubShapeID2);
+	}
+
+	return count;
 }
 
 Vector3 JoltPhysicsDirectSpaceState3D::get_closest_point_to_object_volume(RID p_object, Vector3 p_point) const {

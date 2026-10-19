@@ -89,5 +89,24 @@
 				[b]Note:[/b] This method does not take into account the [code]motion[/code] property of the object.
 			</description>
 		</method>
+		<method name="intersect_sphere_triangles">
+			<return type="Dictionary[]" />
+			<param index="0" name="center" type="Vector3" />
+			<param index="1" name="radius" type="float" />
+			<param index="2" name="collision_mask" type="int" default="4294967295" />
+			<param index="3" name="max_results" type="int" default="64" />
+			<param index="4" name="hit_back_faces" type="bool" default="false" />
+			<description>
+				Returns every triangle of a concave (mesh) shape that a sphere of [param radius] at [param center] overlaps, with no occlusion: one dictionary per triangle, at most [param max_results]. Only bodies are tested, and shapes other than meshes are skipped. A triangle whose back faces the centre is skipped unless [param hit_back_faces] is [code]true[/code]. Each dictionary holds:
+				[code]a[/code], [code]b[/code], [code]c[/code]: The triangle's corners in world space.
+				[code]normal[/code]: The triangle's front-face normal in world space.
+				[code]point[/code]: The point on the triangle closest to [param center].
+				[code]rid[/code]: The body's [RID].
+				[code]collider_id[/code]: The body's object ID.
+				[code]shape[/code]: The shape index within the body.
+				[code]face_index[/code]: The face index within the shape, or [code]-1[/code] if [member ProjectSettings.physics/jolt_physics_3d/queries/enable_ray_cast_face_index] is disabled.
+				[b]Note:[/b] Only the Jolt Physics server answers; other servers return an empty array.
+			</description>
+		</method>
 	</methods>
 </class>

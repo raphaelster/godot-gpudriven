@@ -482,6 +482,30 @@ Dictionary PhysicsDirectSpaceState3D::_get_rest_info(RequiredParam<PhysicsShapeQ
 	return r;
 }
 
+TypedArray<Dictionary> PhysicsDirectSpaceState3D::_intersect_sphere_triangles(const Vector3 &p_center, real_t p_radius, uint32_t p_collision_mask, int p_max_results, bool p_hit_back_faces) {
+	ERR_FAIL_COND_V(p_max_results < 0, TypedArray<Dictionary>());
+	Vector<TriangleResult> results;
+	results.resize(p_max_results);
+	const int count = intersect_sphere_triangles(p_center, p_radius, p_collision_mask, p_hit_back_faces, results.ptrw(), results.size());
+	TypedArray<Dictionary> r;
+	r.resize(count);
+	for (int i = 0; i < count; i++) {
+		const TriangleResult &t = results[i];
+		Dictionary d;
+		d["a"] = t.a;
+		d["b"] = t.b;
+		d["c"] = t.c;
+		d["normal"] = t.normal;
+		d["point"] = t.point;
+		d["rid"] = t.rid;
+		d["collider_id"] = t.collider_id;
+		d["shape"] = t.shape;
+		d["face_index"] = t.face_index;
+		r[i] = d;
+	}
+	return r;
+}
+
 PhysicsDirectSpaceState3D::PhysicsDirectSpaceState3D() {
 }
 
@@ -492,6 +516,7 @@ void PhysicsDirectSpaceState3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("cast_motion", "parameters"), &PhysicsDirectSpaceState3D::_cast_motion);
 	ClassDB::bind_method(D_METHOD("collide_shape", "parameters", "max_results"), &PhysicsDirectSpaceState3D::_collide_shape, DEFVAL(32));
 	ClassDB::bind_method(D_METHOD("get_rest_info", "parameters"), &PhysicsDirectSpaceState3D::_get_rest_info);
+	ClassDB::bind_method(D_METHOD("intersect_sphere_triangles", "center", "radius", "collision_mask", "max_results", "hit_back_faces"), &PhysicsDirectSpaceState3D::_intersect_sphere_triangles, DEFVAL(UINT32_MAX), DEFVAL(64), DEFVAL(false));
 }
 
 ///////////////////////////////

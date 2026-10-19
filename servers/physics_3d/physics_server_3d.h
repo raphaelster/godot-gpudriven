@@ -132,6 +132,7 @@ private:
 	Vector<real_t> _cast_motion(RequiredParam<PhysicsShapeQueryParameters3D> rp_shape_query);
 	TypedArray<Vector3> _collide_shape(RequiredParam<PhysicsShapeQueryParameters3D> rp_shape_query, int p_max_results = 32);
 	Dictionary _get_rest_info(RequiredParam<PhysicsShapeQueryParameters3D> rp_shape_query);
+	TypedArray<Dictionary> _intersect_sphere_triangles(const Vector3 &p_center, real_t p_radius, uint32_t p_collision_mask = UINT32_MAX, int p_max_results = 64, bool p_hit_back_faces = false);
 
 protected:
 	static void _bind_methods();
@@ -209,6 +210,25 @@ public:
 	virtual bool rest_info(const ShapeParameters &p_parameters, ShapeRestInfo *r_info) = 0;
 
 	virtual Vector3 get_closest_point_to_object_volume(RID p_object, const Vector3 p_point) const = 0;
+
+	// EVERY TRIANGLE of a concave (mesh) shape that a sphere overlaps, with its world-space corners,
+	// its outward normal and the closest point on it to the centre — no occlusion, one result per
+	// triangle. Bodies only; any other shape kind is skipped. A fork addition (climbgame's
+	// doc/godot-fork.md): stock Godot's shape queries drop the triangle. The default answers
+	// nothing, so a server that does not override it reports no triangles.
+	struct TriangleResult {
+		Vector3 a;
+		Vector3 b;
+		Vector3 c;
+		Vector3 normal;
+		Vector3 point;
+		RID rid;
+		ObjectID collider_id;
+		int shape = 0;
+		int face_index = -1;
+	};
+
+	virtual int intersect_sphere_triangles(const Vector3 &p_center, real_t p_radius, uint32_t p_collision_mask, bool p_hit_back_faces, TriangleResult *r_results, int p_result_max) { return 0; }
 
 	PhysicsDirectSpaceState3D();
 };
